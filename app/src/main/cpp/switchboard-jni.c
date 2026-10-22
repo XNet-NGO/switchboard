@@ -28,6 +28,11 @@
 
 #include "portmux.h"
 
+
+#define TAG "switchboard-jni"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
+
 /* from xnix-netd-client.c: fetch an interface-pinned/low-port socket
    minted by the privileged xnix-netd daemon (via SCM_RIGHTS). */
 extern int xnd_request_socket (int af, int type, const char *ifname, int port);
@@ -46,14 +51,11 @@ provide_pinned_fd (int family, int socktype, void *user_data)
     int ty = socktype; /* SOCK_STREAM/DGRAM already */
     int fd = xnd_request_socket (af, ty, pc ? pc->ifname : (void *)0, 0);
     if (fd < 0)
-        LOGW ("provide_pinned_fd: xnix-netd returned %d for if=%s", fd,
-              pc ? pc->ifname : "(null)");
+        __android_log_print (ANDROID_LOG_WARN, TAG,
+            "provide_pinned_fd: xnix-netd returned %d for if=%s", fd,
+            pc ? pc->ifname : "(null)");
     return fd;
 }
-
-#define TAG "switchboard-jni"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
 /* Per-route callback context for CALLBACK egress. */
 typedef struct {
