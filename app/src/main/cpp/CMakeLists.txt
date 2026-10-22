@@ -25,7 +25,9 @@ target_include_directories(switchboard PRIVATE
     "${PORTMUX_INCLUDE_DIR}")
 
 # Link order matters for static archives: portmux depends on hevtask.
+# libandroid provides android_setsocknetwork (network pinning); log for logging.
 target_link_libraries(switchboard
     portmux
     hevtask
+    android
     log)

@@ -10,17 +10,21 @@
  *   nativeStop(h)
  *   nativeDestroy(h)
  *
- * Egress CALLBACK is wired to Kotlin: when a route uses EGRESS kind 3
- * (callback), portmux invokes bind_hook() which up-calls
- * SwitchboardNative.bindSocketToNetwork(fd, networkHandle) so Kotlin can call
- * Network.bindSocket(fd) - the no-root way to pin egress to a chosen network.
+ * Egress CALLBACK (network pinning) is handled entirely in native code via
+ * android_setsocknetwork() from libandroid (NDK, API 23+). The networkHandle
+ * passed from Kotlin is Network.getNetworkHandle(), which is exactly the
+ * net_handle_t that android_setsocknetwork expects. This avoids a JNI up-call
+ * from the portmux worker thread (which previously crashed with an invalid
+ * JNI transition frame).
  ============================================================================
  */
 
 #include <jni.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <android/log.h>
+#include <android/multinetwork.h>
 
 #include "portmux.h"
 
@@ -28,67 +32,30 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
-static JavaVM *g_vm;
-
 /* Per-route callback context for CALLBACK egress. */
 typedef struct {
-    jlong network_handle; /* opaque Android Network handle (0 = none) */
+    net_handle_t network_handle; /* Network.getNetworkHandle() (0 = none) */
 } EgressCtx;
 
-JNIEXPORT jint JNICALL
-JNI_OnLoad (JavaVM *vm, void *reserved)
-{
-    (void)reserved;
-    g_vm = vm;
-    return JNI_VERSION_1_6;
-}
-
 /* Called by portmux on a freshly created upstream socket (before connect).
-   Up-calls into Kotlin to bind the fd to a specific Android Network. */
+   Binds the fd to a specific Android Network entirely in native code. */
 static int
 bind_hook (int fd, void *user_data)
 {
     EgressCtx *ctx = (EgressCtx *)user_data;
-    JNIEnv *env = NULL;
-    jclass cls;
-    jmethodID mid;
-    int attached = 0;
-    int rc = 0;
 
     if (!ctx || ctx->network_handle == 0)
         return 0; /* no pinning requested */
 
-    if ((*g_vm)->GetEnv (g_vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-        if ((*g_vm)->AttachCurrentThread (g_vm, &env, NULL) != JNI_OK) {
-            LOGW ("bind_hook: AttachCurrentThread failed");
-            return -1;
-        }
-        attached = 1;
+    int rc = android_setsocknetwork (ctx->network_handle, fd);
+    if (rc != 0) {
+        LOGW ("bind_hook: android_setsocknetwork(handle=%llu, fd=%d) failed: %s",
+              (unsigned long long)ctx->network_handle, fd, strerror (errno));
+        return -1;
     }
-
-    cls = (*env)->FindClass (env, "org/xnet/switchboard/SwitchboardNative");
-    if (!cls) {
-        LOGW ("bind_hook: SwitchboardNative not found");
-        rc = -1;
-        goto done;
-    }
-    mid = (*env)->GetStaticMethodID (env, cls, "bindSocketToNetwork", "(IJ)Z");
-    if (!mid) {
-        LOGW ("bind_hook: bindSocketToNetwork not found");
-        rc = -1;
-        goto done;
-    }
-    {
-        jboolean ok = (*env)->CallStaticBooleanMethod (env, cls, mid,
-                                                       (jint)fd,
-                                                       ctx->network_handle);
-        rc = ok ? 0 : -1;
-    }
-
-done:
-    if (attached)
-        (*g_vm)->DetachCurrentThread (g_vm);
-    return rc;
+    LOGI ("bind_hook: fd=%d pinned to network handle=%llu", fd,
+          (unsigned long long)ctx->network_handle);
+    return 0;
 }
 
 static const char *
@@ -145,7 +112,7 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddRoute (
         break;
     case 3: {
         EgressCtx *ctx = calloc (1, sizeof (EgressCtx));
-        ctx->network_handle = networkHandle;
+        ctx->network_handle = (net_handle_t)networkHandle;
         eg.kind = PORTMUX_EGRESS_CALLBACK;
         eg.callback = bind_hook;
         eg.callback_data = ctx;
