@@ -14,6 +14,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
 
+    /** Networks currently available for egress pinning. Refreshed on demand. */
+    private val _networks = MutableStateFlow(NetworkRepository.available(app))
+    val networks: StateFlow<List<EgressNetwork>> = _networks.asStateFlow()
+
+    fun refreshNetworks() {
+        _networks.value = NetworkRepository.available(getApplication())
+    }
+
     fun addRoute(r: Route) {
         _routes.value = _routes.value + r
         persist()

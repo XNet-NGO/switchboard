@@ -36,6 +36,7 @@ fun SwitchboardApp(vm: MainViewModel) {
     MaterialTheme {
         val routes by vm.routes.collectAsStateWithLifecycle()
         val running by vm.running.collectAsStateWithLifecycle()
+        val networks by vm.networks.collectAsStateWithLifecycle()
         var showAdd by remember { mutableStateOf(false) }
 
         Scaffold(
@@ -87,6 +88,8 @@ fun SwitchboardApp(vm: MainViewModel) {
 
         if (showAdd) {
             AddRouteDialog(
+                networks = networks,
+                onRefreshNetworks = { vm.refreshNetworks() },
                 onDismiss = { showAdd = false },
                 onAdd = { route ->
                     vm.addRoute(route)

@@ -41,7 +41,7 @@ data class Route(
             EgressMode.NONE -> ""
             EgressMode.SOURCE -> "  src=$egressArg"
             EgressMode.DEVICE -> "  dev=$egressArg"
-            EgressMode.NETWORK -> "  net"
+            EgressMode.NETWORK -> "  via network"
         }
         return "$p  $listenAddr:$listenPort → $targetAddr:$targetPort$eg"
     }
