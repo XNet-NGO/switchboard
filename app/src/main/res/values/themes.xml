@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose drives the real theming (Material 3). This base theme just
-         provides a no-action-bar Material shell for the Activity. -->
+    <!-- Light shell (default). Compose drives the real Material 3 theming;
+         this is just the Activity window. A values-night/ variant supplies the
+         dark window so system bars / background follow dark mode before Compose
+         draws. -->
     <style name="Theme.Switchboard" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>
