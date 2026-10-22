@@ -3,9 +3,11 @@ package org.xnet.switchboard
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -35,7 +37,14 @@ class ForwarderService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIF_ID, buildNotification(routes.size))
+        if (!startForegroundSafely(routes.size)) {
+            // Could not enter foreground (e.g. missing/denied requirements).
+            // Running a background service for networking would be killed by
+            // the OS, so stop cleanly rather than limp along.
+            Log.e(TAG, "startForeground failed; aborting")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         val req = NetworkRequester(this)
         requester = req
@@ -96,15 +105,51 @@ class ForwarderService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Enter the foreground with the correct service type. On API 34+ the type
+     * must be passed to startForeground(); declaring it in the manifest alone
+     * is not sufficient. Returns false if the platform refuses (caught so the
+     * service can stop cleanly instead of crashing).
+     */
+    private fun startForegroundSafely(routeCount: Int): Boolean {
+        val notif = buildNotification(routeCount)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIF_ID, notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "startForeground error: ${t.message}")
+            false
+        }
+    }
+
     private fun buildNotification(routeCount: Int): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(
                 CHANNEL_ID, "Forwarding",
                 NotificationManager.IMPORTANCE_LOW,
-            )
+            ).apply {
+                description = "Shown while Switchboard is forwarding ports"
+                setShowBadge(false)
+            }
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(ch)
         }
+
+        val tapIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentPi = PendingIntent.getActivity(
+            this, 0, tapIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             Notification.Builder(this, CHANNEL_ID)
         else
@@ -112,9 +157,14 @@ class ForwarderService : Service() {
 
         return builder
             .setContentTitle("Switchboard")
-            .setContentText("Forwarding $routeCount route(s)")
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentText(
+                if (routeCount == 1) "Forwarding 1 route"
+                else "Forwarding $routeCount routes",
+            )
+            .setSmallIcon(android.R.drawable.ic_menu_share)
+            .setContentIntent(contentPi)
             .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .build()
     }
 
