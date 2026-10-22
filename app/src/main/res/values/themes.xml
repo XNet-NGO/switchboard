@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose drives the real theming (Material 3). This base theme just
+         provides a no-action-bar Material shell for the Activity. -->
+    <style name="Theme.Switchboard" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

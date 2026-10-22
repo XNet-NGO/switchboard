@@ -1,0 +1,17 @@
+# Android / Gradle
+*.iml
+.gradle/
+/local.properties
+/.idea/
+/build/
+/app/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Fetched portmux prebuilt artifacts (pulled at build time)
+/app/.portmux/
+
+# OS
+.DS_Store
+build.out
