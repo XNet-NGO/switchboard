@@ -19,7 +19,9 @@ set_target_properties(hevtask PROPERTIES
 
 # JNI bridge shared library loaded by the app.
 add_library(switchboard SHARED
-    switchboard-jni.c)
+    switchboard-jni.c
+        xnix-netd-client.c
+        )
 
 target_include_directories(switchboard PRIVATE
     "${PORTMUX_INCLUDE_DIR}")

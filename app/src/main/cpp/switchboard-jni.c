@@ -28,9 +28,34 @@
 
 #include "portmux.h"
 
+
 #define TAG "switchboard-jni"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
+
+/* from xnix-netd-client.c: fetch an interface-pinned/low-port socket
+   minted by the privileged xnix-netd daemon (via SCM_RIGHTS). */
+extern int xnd_request_socket (int af, int type, const char *ifname, int port);
+
+/* Provider ctx for PORTMUX_EGRESS_PROVIDED_FD (DEVICE-mode interface pin). */
+typedef struct {
+    char ifname[32];
+} ProvCtx;
+
+/* portmux PortmuxFdProvider: hand back a daemon-minted, iface-pinned fd. */
+static int
+provide_pinned_fd (int family, int socktype, void *user_data)
+{
+    ProvCtx *pc = (ProvCtx *)user_data;
+    int af = family;
+    int ty = socktype; /* SOCK_STREAM/DGRAM already */
+    int fd = xnd_request_socket (af, ty, pc ? pc->ifname : (void *)0, 0);
+    if (fd < 0)
+        __android_log_print (ANDROID_LOG_WARN, TAG,
+            "provide_pinned_fd: xnix-netd returned %d for if=%s", fd,
+            pc ? pc->ifname : "(null)");
+    return fd;
+}
 
 /* Per-route callback context for CALLBACK egress. */
 typedef struct {
@@ -105,11 +130,19 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddRoute (
         eg.source_ip = strdup (arg);
         egp = &eg;
         break;
-    case 2:
-        eg.kind = PORTMUX_EGRESS_DEVICE;
-        eg.device = strdup (arg);
+    case 2: {
+        /* Interface pinning: an app cannot hold CAP_NET_RAW (AOSP
+           app.te:600 neverallow), so delegate to xnix-netd via
+           PORTMUX_EGRESS_PROVIDED_FD — the daemon mints an
+           SO_BINDTODEVICE-pinned fd and portmux adopts it. */
+        ProvCtx *pc = calloc (1, sizeof (ProvCtx));
+        strncpy (pc->ifname, arg, sizeof (pc->ifname) - 1);
+        eg.kind = PORTMUX_EGRESS_PROVIDED_FD;
+        eg.provider = provide_pinned_fd;
+        eg.callback_data = pc;
         egp = &eg;
         break;
+    }
     case 3: {
         EgressCtx *ctx = calloc (1, sizeof (EgressCtx));
         ctx->network_handle = (net_handle_t)networkHandle;
