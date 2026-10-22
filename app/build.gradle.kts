@@ -86,6 +86,23 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // Credentials come from the environment, never hardcoded in the
+            // repo. Set XNET_KEYSTORE / XNET_KEYSTORE_PASS / XNET_KEY_ALIAS
+            // (see XNet-NGO/xnet-keystore). When unset, release builds are
+            // produced unsigned.
+            val ksPath = System.getenv("XNET_KEYSTORE")
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("XNET_KEYSTORE_PASS")
+                keyAlias = System.getenv("XNET_KEY_ALIAS") ?: "xnet-key"
+                keyPassword = System.getenv("XNET_KEY_PASS")
+                    ?: System.getenv("XNET_KEYSTORE_PASS")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -93,6 +110,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (System.getenv("XNET_KEYSTORE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
