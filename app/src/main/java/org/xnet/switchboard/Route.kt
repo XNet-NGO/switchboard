@@ -14,9 +14,13 @@ enum class EgressMode {
     /** SO_BINDTODEVICE to interface name ([egressArg]); needs root/CAP_NET_RAW. */
     DEVICE,
 
-    /** Pin to an Android Network via bindSocket (no root). */
+    /** Pin to an Android Network via android_setsocknetwork (no root). */
     NETWORK,
 }
+
+/** Transport to request for a NETWORK-egress route. ANY uses the specific
+ *  [Route.networkHandle] as-is without requesting a particular transport. */
+enum class NetTransport { ANY, WIFI, CELLULAR, ETHERNET }
 
 /**
  * A single forwarding rule: expose [listenAddr]:[listenPort] and forward to
@@ -32,8 +36,12 @@ data class Route(
     val targetPort: Int = 0,
     val egress: EgressMode = EgressMode.NONE,
     val egressArg: String = "",
-    /** Opaque Android Network handle for EgressMode.NETWORK (0 = none). */
+    /** Opaque Android Network handle for EgressMode.NETWORK (0 = none).
+     *  Used as a fallback/hint; the service prefers a freshly requested
+     *  network of [transport] when that resolves. */
     val networkHandle: Long = 0L,
+    /** For EgressMode.NETWORK: which transport to requestNetwork() for. */
+    val transport: NetTransport = NetTransport.ANY,
 ) {
     fun summary(): String {
         val p = if (proto == Proto.TCP) "tcp" else "udp"
@@ -41,7 +49,7 @@ data class Route(
             EgressMode.NONE -> ""
             EgressMode.SOURCE -> "  src=$egressArg"
             EgressMode.DEVICE -> "  dev=$egressArg"
-            EgressMode.NETWORK -> "  via network"
+            EgressMode.NETWORK -> "  via ${transport.name.lowercase()}"
         }
         return "$p  $listenAddr:$listenPort → $targetAddr:$targetPort$eg"
     }

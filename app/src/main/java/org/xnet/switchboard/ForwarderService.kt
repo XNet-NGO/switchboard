@@ -22,6 +22,7 @@ class ForwarderService : Service() {
 
     private var handle: Long = 0L
     private var worker: Thread? = null
+    private var requester: NetworkRequester? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -36,32 +37,47 @@ class ForwarderService : Service() {
 
         startForeground(NOTIF_ID, buildNotification(routes.size))
 
-        handle = SwitchboardNative.nativeNew()
-        if (handle == 0L) {
-            Log.e(TAG, "portmux_new failed")
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        val req = NetworkRequester(this)
+        requester = req
 
-        routes.forEach { r ->
-            val proto = if (r.proto == Proto.TCP) SwitchboardNative.PROTO_TCP
-            else SwitchboardNative.PROTO_UDP
-            val kind = when (r.egress) {
-                EgressMode.NONE -> SwitchboardNative.EGRESS_NONE
-                EgressMode.SOURCE -> SwitchboardNative.EGRESS_SOURCE
-                EgressMode.DEVICE -> SwitchboardNative.EGRESS_DEVICE
-                EgressMode.NETWORK -> SwitchboardNative.EGRESS_CALLBACK
-            }
-            val rc = SwitchboardNative.nativeAddRoute(
-                handle, proto, r.listenAddr, r.listenPort,
-                r.targetAddr, r.targetPort, kind, r.egressArg, r.networkHandle,
-            )
-            if (rc != 0) Log.w(TAG, "add route failed: ${r.summary()}")
-        }
-
+        // All portmux setup + run happens on the worker thread. resolveHandle()
+        // may block (waiting for requestNetwork to resolve), so it must not run
+        // on the main thread; and the hev-task system is thread-local, so
+        // new/add/run belong together on one thread.
         worker = thread(name = "portmux-run") {
+            val h = SwitchboardNative.nativeNew()
+            if (h == 0L) {
+                Log.e(TAG, "portmux_new failed")
+                stopSelf()
+                return@thread
+            }
+            handle = h
+
+            routes.forEach { r ->
+                val proto = if (r.proto == Proto.TCP) SwitchboardNative.PROTO_TCP
+                else SwitchboardNative.PROTO_UDP
+                val kind = when (r.egress) {
+                    EgressMode.NONE -> SwitchboardNative.EGRESS_NONE
+                    EgressMode.SOURCE -> SwitchboardNative.EGRESS_SOURCE
+                    EgressMode.DEVICE -> SwitchboardNative.EGRESS_DEVICE
+                    EgressMode.NETWORK -> SwitchboardNative.EGRESS_CALLBACK
+                }
+                // For NETWORK egress, request the chosen transport and use the
+                // resolved handle (falls back to the stored handle on timeout).
+                val netHandle = if (r.egress == EgressMode.NETWORK) {
+                    req.resolveHandle(r.transport, r.networkHandle)
+                } else {
+                    0L
+                }
+                val rc = SwitchboardNative.nativeAddRoute(
+                    h, proto, r.listenAddr, r.listenPort,
+                    r.targetAddr, r.targetPort, kind, r.egressArg, netHandle,
+                )
+                if (rc != 0) Log.w(TAG, "add route failed: ${r.summary()}")
+            }
+
             Log.i(TAG, "forwarder run loop start")
-            SwitchboardNative.nativeRun(handle) // blocks until stop
+            SwitchboardNative.nativeRun(h) // blocks until stop
             Log.i(TAG, "forwarder run loop exit")
         }
         return START_STICKY
@@ -70,11 +86,13 @@ class ForwarderService : Service() {
     override fun onDestroy() {
         if (handle != 0L) {
             SwitchboardNative.nativeStop(handle)
-            worker?.join(2000)
+            worker?.join(3000)
             SwitchboardNative.nativeDestroy(handle)
             handle = 0L
         }
         worker = null
+        requester?.releaseAll()
+        requester = null
         super.onDestroy()
     }
 

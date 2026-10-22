@@ -26,6 +26,7 @@ object RouteStore {
                     egress = EgressMode.entries[o.optInt("egress")],
                     egressArg = o.optString("egressArg"),
                     networkHandle = o.optLong("networkHandle"),
+                    transport = NetTransport.entries[o.optInt("transport")],
                 )
             }
         }.getOrDefault(emptyList())
@@ -45,7 +46,8 @@ object RouteStore {
                     .put("targetPort", r.targetPort)
                     .put("egress", r.egress.ordinal)
                     .put("egressArg", r.egressArg)
-                    .put("networkHandle", r.networkHandle),
+                    .put("networkHandle", r.networkHandle)
+                    .put("transport", r.transport.ordinal),
             )
         }
         prefs(ctx).edit().putString(KEY, arr.toString()).apply()

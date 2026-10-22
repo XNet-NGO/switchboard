@@ -4,11 +4,12 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 
-/** A selectable egress network: a human label plus the opaque handle portmux
- *  passes back to [android.net.Network.fromNetworkHandle]. */
+/** A selectable egress network: a human label, the opaque handle, and the
+ *  transport so the forwarder can requestNetwork() for the right kind. */
 data class EgressNetwork(
     val handle: Long,
     val label: String,
+    val transport: NetTransport,
 )
 
 /** Enumerates the device's currently available networks so a route can pin its
@@ -22,13 +23,14 @@ object NetworkRepository {
         val active = cm.activeNetwork
         cm.allNetworks.forEach { net ->
             val caps = cm.getNetworkCaps(net) ?: return@forEach
-            val kind = transportLabel(caps)
+            val transport = transportOf(caps)
+            val kind = transportLabel(transport)
             val extra = buildString {
                 if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) append(" · internet")
                 if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) append(" · metered")
                 if (net == active) append(" · active")
             }
-            out.add(EgressNetwork(net.networkHandle, kind + extra))
+            out.add(EgressNetwork(net.networkHandle, kind + extra, transport))
         }
         return out
     }
@@ -36,12 +38,17 @@ object NetworkRepository {
     private fun ConnectivityManager.getNetworkCaps(net: android.net.Network) =
         try { getNetworkCapabilities(net) } catch (_: Throwable) { null }
 
-    private fun transportLabel(caps: NetworkCapabilities): String = when {
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) -> "Bluetooth"
-        else -> "Other"
+    private fun transportOf(caps: NetworkCapabilities): NetTransport = when {
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetTransport.WIFI
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetTransport.CELLULAR
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetTransport.ETHERNET
+        else -> NetTransport.ANY
+    }
+
+    private fun transportLabel(t: NetTransport): String = when (t) {
+        NetTransport.WIFI -> "Wi-Fi"
+        NetTransport.CELLULAR -> "Cellular"
+        NetTransport.ETHERNET -> "Ethernet"
+        NetTransport.ANY -> "Other"
     }
 }

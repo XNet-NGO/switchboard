@@ -161,6 +161,9 @@ fun AddRouteDialog(
                             egressArg = if (egress == EgressMode.SOURCE) egressArg else "",
                             networkHandle = if (egress == EgressMode.NETWORK)
                                 selectedNetwork?.handle ?: 0L else 0L,
+                            transport = if (egress == EgressMode.NETWORK)
+                                selectedNetwork?.transport ?: org.xnet.switchboard.NetTransport.ANY
+                            else org.xnet.switchboard.NetTransport.ANY,
                         ),
                     )
                 },
