@@ -24,6 +24,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <android/log.h>
 #include <android/multinetwork.h>
 
@@ -58,29 +60,100 @@ provide_pinned_fd (int family, int socktype, void *user_data)
     return fd;
 }
 
-/* Per-route callback context for CALLBACK egress. */
+/* Per-route callback context for CALLBACK egress.
+ *
+ * The network handle is LIVE, not frozen at add time: a long-lived SOCKS proxy
+ * opens many upstream connections over a session, and the pinned Android
+ * Network can be lost and regained (with a *different* net_handle_t) mid-flight
+ * — e.g. a Wi-Fi<->cellular handoff, doze, or a GrapheneOS Network-permission
+ * toggle. bind_hook therefore reads the handle atomically on every connect, and
+ * NetworkRequester pushes updates via nativeUpdateNetworkHandle() on
+ * onAvailable/onLost. A handle of 0 means "network currently unavailable" and
+ * bind_hook fails closed (aborts the upstream connect) rather than leaking the
+ * connection onto the default network. @token groups contexts that share one
+ * transport (NetworkRequester keys its requests by transport). */
 typedef struct {
-    net_handle_t network_handle; /* Network.getNetworkHandle() (0 = none) */
+    _Atomic net_handle_t network_handle; /* live; 0 = unavailable (fail closed) */
+    int token;                           /* transport group, for live updates */
 } EgressCtx;
 
+/* Registry of live CALLBACK contexts so an out-of-band handle update (from the
+ * ConnectivityManager callback thread) can reach every EgressCtx sharing a
+ * token. Built on the worker thread at add time; read/written under a mutex.
+ * Contexts live for the whole forwarder run (intentionally leaked at process
+ * exit), so the registry never removes individual entries — it is reset
+ * wholesale when a new engine instance is created. */
+#define MAX_EGRESS_CTX 128
+static pthread_mutex_t g_ctx_lock = PTHREAD_MUTEX_INITIALIZER;
+static EgressCtx *g_ctxs[MAX_EGRESS_CTX];
+static int g_ctx_count;
+
+static void
+ctx_registry_reset (void)
+{
+    pthread_mutex_lock (&g_ctx_lock);
+    g_ctx_count = 0;
+    memset (g_ctxs, 0, sizeof g_ctxs);
+    pthread_mutex_unlock (&g_ctx_lock);
+}
+
+static void
+ctx_registry_add (EgressCtx *ctx)
+{
+    pthread_mutex_lock (&g_ctx_lock);
+    if (g_ctx_count < MAX_EGRESS_CTX)
+        g_ctxs[g_ctx_count++] = ctx;
+    else
+        LOGW ("egress ctx registry full (%d); live updates for this route "
+              "will not propagate", MAX_EGRESS_CTX);
+    pthread_mutex_unlock (&g_ctx_lock);
+}
+
+/* Update every live CALLBACK context whose token matches. netHandle==0 marks
+   the transport unavailable (fail-closed on subsequent connects). */
+static void
+ctx_registry_update (int token, net_handle_t netHandle)
+{
+    pthread_mutex_lock (&g_ctx_lock);
+    for (int i = 0; i < g_ctx_count; i++) {
+        if (g_ctxs[i] && g_ctxs[i]->token == token)
+            atomic_store (&g_ctxs[i]->network_handle, netHandle);
+    }
+    pthread_mutex_unlock (&g_ctx_lock);
+}
+
 /* Called by portmux on a freshly created upstream socket (before connect).
-   Binds the fd to a specific Android Network entirely in native code. */
+   Binds the fd to a specific Android Network entirely in native code. Reads
+   the LIVE handle so a mid-session network change is honored per connection. */
 static int
 bind_hook (int fd, void *user_data)
 {
     EgressCtx *ctx = (EgressCtx *)user_data;
+    if (!ctx)
+        return 0;
 
-    if (!ctx || ctx->network_handle == 0)
-        return 0; /* no pinning requested */
+    net_handle_t h = atomic_load (&ctx->network_handle);
+    if (h == 0) {
+        /* No pinning requested, or the pinned network is currently gone.
+           If a token was assigned (token>0), this route explicitly pinned a
+           transport, so a 0 handle means "unavailable" -> fail closed. A
+           token of 0 means no pinning was ever requested -> allow default. */
+        if (ctx->token > 0) {
+            LOGW ("bind_hook: network for token=%d unavailable; failing closed "
+                  "(fd=%d)", ctx->token, fd);
+            return -1;
+        }
+        return 0;
+    }
 
-    int rc = android_setsocknetwork (ctx->network_handle, fd);
+    int rc = android_setsocknetwork (h, fd);
     if (rc != 0) {
         LOGW ("bind_hook: android_setsocknetwork(handle=%llu, fd=%d) failed: %s",
-              (unsigned long long)ctx->network_handle, fd, strerror (errno));
+              (unsigned long long)h, fd, strerror (errno));
         return -1;
     }
-    LOGI ("bind_hook: fd=%d pinned to network handle=%llu", fd,
-          (unsigned long long)ctx->network_handle);
+    LOGI ("bind_hook: fd=%d pinned to network handle=%llu (token=%d)", fd,
+          (unsigned long long)h, ctx->token);
     return 0;
 }
 
@@ -100,6 +173,9 @@ JNIEXPORT jlong JNICALL
 Java_org_xnet_switchboard_SwitchboardNative_nativeNew (JNIEnv *env, jclass c)
 {
     (void)env; (void)c;
+    /* A new engine instance owns a fresh set of egress contexts; drop any from
+       a previous run so stale pointers are never updated. */
+    ctx_registry_reset ();
     return (jlong)(intptr_t)portmux_new ();
 }
 
@@ -107,13 +183,14 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeNew (JNIEnv *env, jclass c)
    shared by nativeAddRoute and nativeAddSocks. On return *egp either points at
    @eg (and @eg is populated) or is NULL for PORTMUX_EGRESS_NONE.
    egressKind: 0 NONE, 1 SOURCE (arg=ip), 2 DEVICE (arg=ifname),
-               3 CALLBACK (arg unused; networkHandle carries the Network).
+               3 CALLBACK (arg unused; networkHandle carries the initial
+               Network, @token groups it for live updates).
    portmux copies primitive fields but keeps our string/ctx pointers by
    reference, so the small strdup/ctx allocations are intentionally leaked for
    the life of the forwarder (freed implicitly at process exit). */
 static void
 build_egress (jint egressKind, const char *arg, jlong networkHandle,
-              PortmuxEgress *eg, PortmuxEgress **egp)
+              jint token, PortmuxEgress *eg, PortmuxEgress **egp)
 {
     memset (eg, 0, sizeof *eg);
 
@@ -138,7 +215,9 @@ build_egress (jint egressKind, const char *arg, jlong networkHandle,
     }
     case 3: {
         EgressCtx *ctx = calloc (1, sizeof (EgressCtx));
-        ctx->network_handle = (net_handle_t)networkHandle;
+        atomic_init (&ctx->network_handle, (net_handle_t)networkHandle);
+        ctx->token = token;
+        ctx_registry_add (ctx);
         eg->kind = PORTMUX_EGRESS_CALLBACK;
         eg->callback = bind_hook;
         eg->callback_data = ctx;
@@ -150,6 +229,20 @@ build_egress (jint egressKind, const char *arg, jlong networkHandle,
     }
 }
 
+/* Push a live network-handle update for every CALLBACK route sharing @token.
+   Called from the ConnectivityManager callback thread (via NetworkRequester)
+   on a Wi-Fi<->cellular handoff etc. netHandle==0 marks the transport gone;
+   bind_hook then fails closed until a new handle arrives. */
+JNIEXPORT void JNICALL
+Java_org_xnet_switchboard_SwitchboardNative_nativeUpdateNetworkHandle (
+    JNIEnv *env, jclass c, jint token, jlong netHandle)
+{
+    (void)env; (void)c;
+    ctx_registry_update ((int)token, (net_handle_t)netHandle);
+    LOGI ("nativeUpdateNetworkHandle: token=%d handle=%llu", (int)token,
+          (unsigned long long)netHandle);
+}
+
 /* egressKind: 0 NONE, 1 SOURCE (egressArg=ip), 2 DEVICE (egressArg=ifname),
                3 CALLBACK (egressArg unused; networkHandle carries the Network) */
 JNIEXPORT jint JNICALL
@@ -157,7 +250,7 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddRoute (
     JNIEnv *env, jclass c, jlong h, jint proto,
     jstring listenAddr, jint listenPort,
     jstring targetAddr, jint targetPort,
-    jint egressKind, jstring egressArg, jlong networkHandle)
+    jint egressKind, jstring egressArg, jlong networkHandle, jint token)
 {
     (void)c;
     Portmux *pm = (Portmux *)(intptr_t)h;
@@ -170,7 +263,7 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddRoute (
 
     PortmuxEgress eg;
     PortmuxEgress *egp = NULL;
-    build_egress (egressKind, arg, networkHandle, &eg, &egp);
+    build_egress (egressKind, arg, networkHandle, token, &eg, &egp);
 
     PortmuxProto p = (proto == 1) ? PORTMUX_PROTO_UDP : PORTMUX_PROTO_TCP;
     return portmux_add_route (pm, p, la, listenPort, ta, targetPort, egp);
@@ -185,7 +278,7 @@ JNIEXPORT jint JNICALL
 Java_org_xnet_switchboard_SwitchboardNative_nativeAddSocks (
     JNIEnv *env, jclass c, jlong h,
     jstring listenAddr, jint listenPort,
-    jint egressKind, jstring egressArg, jlong networkHandle)
+    jint egressKind, jstring egressArg, jlong networkHandle, jint token)
 {
     (void)c;
     Portmux *pm = (Portmux *)(intptr_t)h;
@@ -197,7 +290,7 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddSocks (
 
     PortmuxEgress eg;
     PortmuxEgress *egp = NULL;
-    build_egress (egressKind, arg, networkHandle, &eg, &egp);
+    build_egress (egressKind, arg, networkHandle, token, &eg, &egp);
 
     return portmux_add_socks (pm, la, listenPort, egp);
 }
