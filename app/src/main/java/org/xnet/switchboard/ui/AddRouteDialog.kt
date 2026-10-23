@@ -33,21 +33,32 @@ fun AddRouteDialog(
     onAdd: (Route) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
-    var socks by remember { mutableStateOf(false) }
+    // Route type: 0=Forward, 1=SOCKS5 proxy, 2=Encrypted tunnel.
+    var routeType by remember { mutableStateOf(0) }
+    val socks = routeType == 1
+    val tunnel = routeType == 2
     var proto by remember { mutableStateOf(Proto.TCP) }
     var listenAddr by remember { mutableStateOf("127.0.0.1") }
     var listenPort by remember { mutableStateOf("") }
     var targetAddr by remember { mutableStateOf("127.0.0.1") }
     var targetPort by remember { mutableStateOf("") }
+    // Tunnel-specific
+    var serverAddr by remember { mutableStateOf("") }
+    var serverPort by remember { mutableStateOf("") }
+    var psk by remember { mutableStateOf("") }
+    var cipherChacha by remember { mutableStateOf(false) }
     var egress by remember { mutableStateOf(EgressMode.NONE) }
     var egressArg by remember { mutableStateOf("") }
     var selectedNetwork by remember { mutableStateOf<EgressNetwork?>(null) }
 
-    // A SOCKS route has no target, so only the listen port must be valid.
-    val portsValid = if (socks) {
-        listenPort.toIntOrNull() != null
-    } else {
-        listenPort.toIntOrNull() != null && targetPort.toIntOrNull() != null
+    // Validity by type.
+    val portsValid = when {
+        tunnel -> serverPort.toIntOrNull() != null &&
+            (targetPort.toIntOrNull() != null) &&
+            serverAddr.isNotBlank() &&
+            psk.length == 64 && psk.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        socks -> listenPort.toIntOrNull() != null
+        else -> listenPort.toIntOrNull() != null && targetPort.toIntOrNull() != null
     }
     val egressValid = when (egress) {
         EgressMode.SOURCE, EgressMode.DEVICE -> egressArg.isNotBlank()
@@ -74,17 +85,26 @@ fun AddRouteDialog(
                 Text("Route type", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = !socks,
-                        onClick = { socks = false },
+                        selected = routeType == 0,
+                        onClick = { routeType = 0 },
                         label = { Text("Forward") },
                     )
                     FilterChip(
-                        selected = socks,
-                        onClick = { socks = true },
+                        selected = routeType == 1,
+                        onClick = { routeType = 1 },
                         label = { Text("SOCKS5 proxy") },
                     )
+                    FilterChip(
+                        selected = routeType == 2,
+                        onClick = {
+                            routeType = 2
+                            // sensible default target for the adb use case
+                            if (targetPort.isBlank()) targetPort = "5555"
+                        },
+                        label = { Text("Tunnel") },
+                    )
                 }
-                if (!socks) {
+                if (routeType == 0) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = proto == Proto.TCP,
@@ -98,27 +118,69 @@ fun AddRouteDialog(
                         )
                     }
                 }
-                OutlinedTextField(
-                    value = listenAddr, onValueChange = { listenAddr = it },
-                    label = { Text("Listen address") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = listenPort, onValueChange = { listenPort = it.filter(Char::isDigit) },
-                    label = { Text(if (socks) "Listen port (SOCKS5, e.g. 1080)" else "Listen port") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (!socks) {
+
+                if (tunnel) {
+                    // Encrypted tunnel client: server + PSK + cipher + target.
+                    OutlinedTextField(
+                        value = serverAddr, onValueChange = { serverAddr = it },
+                        label = { Text("Server address (rendezvous box)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = serverPort, onValueChange = { serverPort = it.filter(Char::isDigit) },
+                        label = { Text("Server port") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = psk, onValueChange = { psk = it.trim() },
+                        label = { Text("Pre-shared key (64 hex chars)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !cipherChacha,
+                            onClick = { cipherChacha = false },
+                            label = { Text("AES-GCM") },
+                        )
+                        FilterChip(
+                            selected = cipherChacha,
+                            onClick = { cipherChacha = true },
+                            label = { Text("ChaCha20") },
+                        )
+                    }
                     OutlinedTextField(
                         value = targetAddr, onValueChange = { targetAddr = it },
-                        label = { Text("Target address") },
+                        label = { Text("Local target address") },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
                         value = targetPort, onValueChange = { targetPort = it.filter(Char::isDigit) },
-                        label = { Text("Target port") },
+                        label = { Text("Local target port (e.g. 5555 = adbd)") },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                } else {
+                    OutlinedTextField(
+                        value = listenAddr, onValueChange = { listenAddr = it },
+                        label = { Text("Listen address") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = listenPort, onValueChange = { listenPort = it.filter(Char::isDigit) },
+                        label = { Text(if (socks) "Listen port (SOCKS5, e.g. 1080)" else "Listen port") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (!socks) {
+                        OutlinedTextField(
+                            value = targetAddr, onValueChange = { targetAddr = it },
+                            label = { Text("Target address") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = targetPort, onValueChange = { targetPort = it.filter(Char::isDigit) },
+                            label = { Text("Target port") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
 
                 Text("Egress", style = MaterialTheme.typography.labelLarge)
@@ -176,10 +238,18 @@ fun AddRouteDialog(
                         Route(
                             name = name,
                             proto = proto,
-                            listenAddr = listenAddr.ifBlank { "127.0.0.1" },
-                            listenPort = listenPort.toInt(),
-                            targetAddr = if (socks) "" else targetAddr.ifBlank { "127.0.0.1" },
-                            targetPort = if (socks) 0 else targetPort.toInt(),
+                            listenAddr = if (tunnel) "" else listenAddr.ifBlank { "127.0.0.1" },
+                            listenPort = if (tunnel || socks) {
+                                if (socks) listenPort.toInt() else 0
+                            } else listenPort.toInt(),
+                            targetAddr = when {
+                                socks -> ""
+                                else -> targetAddr.ifBlank { "127.0.0.1" }
+                            },
+                            targetPort = when {
+                                socks -> 0
+                                else -> targetPort.toInt()
+                            },
                             egress = egress,
                             egressArg = if (egress == EgressMode.SOURCE) egressArg else "",
                             networkHandle = if (egress == EgressMode.NETWORK)
@@ -188,6 +258,11 @@ fun AddRouteDialog(
                                 selectedNetwork?.transport ?: org.xnet.switchboard.NetTransport.ANY
                             else org.xnet.switchboard.NetTransport.ANY,
                             socks = socks,
+                            tunnel = tunnel,
+                            serverAddr = if (tunnel) serverAddr else "",
+                            serverPort = if (tunnel) serverPort.toInt() else 0,
+                            psk = if (tunnel) psk else "",
+                            cipher = if (tunnel && cipherChacha) 1 else 0,
                         ),
                     )
                 },

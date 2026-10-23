@@ -91,7 +91,13 @@ class ForwarderService : Service() {
                     netHandle = 0L
                     token = 0
                 }
-                val rc = if (r.socks) {
+                val rc = if (r.tunnel) {
+                    // Encrypted tunnel client: dial server, splice to target.
+                    SwitchboardNative.nativeAddTunnelClient(
+                        h, r.serverAddr, r.serverPort, r.targetAddr, r.targetPort,
+                        r.psk, r.cipher, kind, r.egressArg, netHandle, token,
+                    )
+                } else if (r.socks) {
                     // SOCKS5 proxy: no fixed target; the same egress policy is
                     // applied to every upstream the proxy opens.
                     SwitchboardNative.nativeAddSocks(

@@ -28,6 +28,11 @@ object RouteStore {
                     networkHandle = o.optLong("networkHandle"),
                     transport = NetTransport.entries[o.optInt("transport")],
                     socks = o.optBoolean("socks", false),
+                    tunnel = o.optBoolean("tunnel", false),
+                    serverAddr = o.optString("serverAddr", ""),
+                    serverPort = o.optInt("serverPort"),
+                    psk = o.optString("psk", ""),
+                    cipher = o.optInt("cipher"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -49,7 +54,12 @@ object RouteStore {
                     .put("egressArg", r.egressArg)
                     .put("networkHandle", r.networkHandle)
                     .put("transport", r.transport.ordinal)
-                    .put("socks", r.socks),
+                    .put("socks", r.socks)
+                    .put("tunnel", r.tunnel)
+                    .put("serverAddr", r.serverAddr)
+                    .put("serverPort", r.serverPort)
+                    .put("psk", r.psk)
+                    .put("cipher", r.cipher),
             )
         }
         prefs(ctx).edit().putString(KEY, arr.toString()).apply()
