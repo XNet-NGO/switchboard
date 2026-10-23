@@ -33,6 +33,7 @@ fun AddRouteDialog(
     onAdd: (Route) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
+    var socks by remember { mutableStateOf(false) }
     var proto by remember { mutableStateOf(Proto.TCP) }
     var listenAddr by remember { mutableStateOf("127.0.0.1") }
     var listenPort by remember { mutableStateOf("") }
@@ -42,7 +43,12 @@ fun AddRouteDialog(
     var egressArg by remember { mutableStateOf("") }
     var selectedNetwork by remember { mutableStateOf<EgressNetwork?>(null) }
 
-    val portsValid = listenPort.toIntOrNull() != null && targetPort.toIntOrNull() != null
+    // A SOCKS route has no target, so only the listen port must be valid.
+    val portsValid = if (socks) {
+        listenPort.toIntOrNull() != null
+    } else {
+        listenPort.toIntOrNull() != null && targetPort.toIntOrNull() != null
+    }
     val egressValid = when (egress) {
         EgressMode.SOURCE, EgressMode.DEVICE -> egressArg.isNotBlank()
         EgressMode.NETWORK -> selectedNetwork != null
@@ -65,17 +71,32 @@ fun AddRouteDialog(
                     label = { Text("Name (optional)") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text("Route type", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = proto == Proto.TCP,
-                        onClick = { proto = Proto.TCP },
-                        label = { Text("TCP") },
+                        selected = !socks,
+                        onClick = { socks = false },
+                        label = { Text("Forward") },
                     )
                     FilterChip(
-                        selected = proto == Proto.UDP,
-                        onClick = { proto = Proto.UDP },
-                        label = { Text("UDP") },
+                        selected = socks,
+                        onClick = { socks = true },
+                        label = { Text("SOCKS5 proxy") },
                     )
+                }
+                if (!socks) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = proto == Proto.TCP,
+                            onClick = { proto = Proto.TCP },
+                            label = { Text("TCP") },
+                        )
+                        FilterChip(
+                            selected = proto == Proto.UDP,
+                            onClick = { proto = Proto.UDP },
+                            label = { Text("UDP") },
+                        )
+                    }
                 }
                 OutlinedTextField(
                     value = listenAddr, onValueChange = { listenAddr = it },
@@ -84,19 +105,21 @@ fun AddRouteDialog(
                 )
                 OutlinedTextField(
                     value = listenPort, onValueChange = { listenPort = it.filter(Char::isDigit) },
-                    label = { Text("Listen port") },
+                    label = { Text(if (socks) "Listen port (SOCKS5, e.g. 1080)" else "Listen port") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
-                    value = targetAddr, onValueChange = { targetAddr = it },
-                    label = { Text("Target address") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = targetPort, onValueChange = { targetPort = it.filter(Char::isDigit) },
-                    label = { Text("Target port") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (!socks) {
+                    OutlinedTextField(
+                        value = targetAddr, onValueChange = { targetAddr = it },
+                        label = { Text("Target address") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = targetPort, onValueChange = { targetPort = it.filter(Char::isDigit) },
+                        label = { Text("Target port") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 Text("Egress", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -155,8 +178,8 @@ fun AddRouteDialog(
                             proto = proto,
                             listenAddr = listenAddr.ifBlank { "127.0.0.1" },
                             listenPort = listenPort.toInt(),
-                            targetAddr = targetAddr.ifBlank { "127.0.0.1" },
-                            targetPort = targetPort.toInt(),
+                            targetAddr = if (socks) "" else targetAddr.ifBlank { "127.0.0.1" },
+                            targetPort = if (socks) 0 else targetPort.toInt(),
                             egress = egress,
                             egressArg = if (egress == EgressMode.SOURCE) egressArg else "",
                             networkHandle = if (egress == EgressMode.NETWORK)
@@ -164,6 +187,7 @@ fun AddRouteDialog(
                             transport = if (egress == EgressMode.NETWORK)
                                 selectedNetwork?.transport ?: org.xnet.switchboard.NetTransport.ANY
                             else org.xnet.switchboard.NetTransport.ANY,
+                            socks = socks,
                         ),
                     )
                 },

@@ -3,7 +3,8 @@
 Userspace **TCP/UDP port forwarder for Android** — no `VpnService`, no system
 TUN device, no root. It wires one local port to another and can pin each
 forward's upstream connection to a specific network (Wi‑Fi, cellular,
-ethernet), without any elevated privilege.
+ethernet), without any elevated privilege. It can also run a **SOCKS5 proxy**
+whose upstream is pinnable the same way.
 
 Switchboard is a thin Kotlin + Jetpack Compose (Material 3) front end over the
 [**portmux**](https://github.com/XNet-NGO/portmux) forwarding engine, which it
@@ -29,6 +30,7 @@ links into a single JNI shared library (`libswitchboard.so`).
   - [Service](#service)
   - [UI](#ui)
 - [Egress modes](#egress-modes)
+- [SOCKS5 proxy](#socks5-proxy)
 - [Permissions](#permissions)
 - [Build](#build)
 - [Usage examples](#usage-examples)
@@ -110,6 +112,7 @@ The C glue between Kotlin and the portmux engine. Loaded as `libswitchboard.so`.
 |---|---|---|
 | `Java_..._nativeNew` | `nativeNew()` | Create a portmux instance; returns an opaque `long` handle. |
 | `Java_..._nativeAddRoute` | `nativeAddRoute(...)` | Register one forwarding route (proto, listen, target, egress kind, egress arg, network handle). Builds a `PortmuxEgress` and, for CALLBACK egress, allocates a per‑route context carrying the `net_handle_t`. |
+| `Java_..._nativeAddSocks` | `nativeAddSocks(...)` | Register a SOCKS5 proxy listener (listen, egress kind, egress arg, network handle). No fixed target; reuses the same `PortmuxEgress` construction as `nativeAddRoute` via `portmux_add_socks()`. |
 | `Java_..._nativeRun` | `nativeRun(handle)` | **Blocks**: runs the portmux event loop until stopped. Must be on a worker thread. |
 | `Java_..._nativeStop` | `nativeStop(handle)` | Signal the loop to shut down (wakes the listener/flow tasks). |
 | `Java_..._nativeDestroy` | `nativeDestroy(handle)` | Free the instance. |
@@ -131,6 +134,7 @@ Thin wrapper over the JNI methods plus the enum constants mirrored from
 
 - `external fun nativeNew(): Long`
 - `external fun nativeAddRoute(handle, proto, listenAddr, listenPort, targetAddr, targetPort, egressKind, egressArg, networkHandle): Int`
+- `external fun nativeAddSocks(handle, listenAddr, listenPort, egressKind, egressArg, networkHandle): Int` — register a SOCKS5 proxy listener (no fixed target).
 - `external fun nativeRun(handle: Long)` — blocks; call off the main thread.
 - `external fun nativeStop(handle: Long)`
 - `external fun nativeDestroy(handle: Long)`
@@ -147,9 +151,12 @@ Thin wrapper over the JNI methods plus the enum constants mirrored from
 - `enum NetTransport { ANY, WIFI, CELLULAR, ETHERNET }` — which transport a
   NETWORK route should `requestNetwork()`.
 - `data class Route(id, name, proto, listenAddr, listenPort, targetAddr,
-  targetPort, egress, egressArg, networkHandle, transport)`
+  targetPort, egress, egressArg, networkHandle, transport, socks)`
+  - `socks: Boolean` — when true the route is a SOCKS5 proxy listener (no fixed
+    target; `proto`/`targetAddr`/`targetPort` are ignored).
   - `fun summary(): String` — one‑line human label, e.g.
-    `tcp  127.0.0.1:6001 → 1.1.1.1:80  via cellular`.
+    `tcp  127.0.0.1:6001 → 1.1.1.1:80  via cellular`, or for SOCKS
+    `socks5  127.0.0.1:1080  via cellular`.
 
 #### `RouteStore.kt` — `object RouteStore`
 
@@ -192,7 +199,8 @@ worker thread. No `VpnService`.
 
 - `onStartCommand(...)` — loads routes; enters the foreground; on a worker
   thread creates the portmux instance, resolves each NETWORK route's handle via
-  `NetworkRequester`, adds every route, and calls `nativeRun` (blocks).
+  `NetworkRequester`, adds every route (via `nativeAddSocks` for SOCKS routes,
+  `nativeAddRoute` otherwise), and calls `nativeRun` (blocks).
 - `onDestroy()` — `nativeStop`, joins the worker, `nativeDestroy`, and
   `NetworkRequester.releaseAll()`.
 - `startForegroundSafely(routeCount): Boolean` — enters foreground passing
@@ -225,9 +233,10 @@ Top‑level screen: Start/Stop button + status, the route list (each card shows
 
 #### `ui/AddRouteDialog.kt` — `@Composable AddRouteDialog(networks, onRefreshNetworks, onDismiss, onAdd)`
 
-Form to create a route: name, TCP/UDP, listen address/port, target
-address/port, and an egress selector (Default / Network / Source IP). For
-Network it lists available networks to pick (recording both handle and
+Form to create a route: name, a route‑type toggle (Forward / SOCKS5 proxy),
+TCP/UDP (forwards only), listen address/port, target address/port (forwards
+only — hidden for SOCKS), and an egress selector (Default / Network / Source
+IP). For Network it lists available networks to pick (recording both handle and
 transport). Height‑capped and scrollable.
 
 ---
@@ -243,6 +252,47 @@ Mirrors `PortmuxEgress` in the engine.
 | `SOURCE` | 1 | — | `bind()` the upstream socket to a local source IP (`egressArg`). |
 | `DEVICE` | 2 | root / `CAP_NET_RAW` | `SO_BINDTODEVICE` to an interface name. Not exposed in the UI (needs privilege). |
 | `NETWORK` | 3 (CALLBACK) | `CHANGE_NETWORK_STATE` | `requestNetwork()` the chosen transport, then `android_setsocknetwork()` the upstream socket to it. The no‑root way to pin egress. |
+
+---
+
+## SOCKS5 proxy
+
+Besides fixed one‑to‑one forwards, a route can instead be a **SOCKS5 proxy**
+listener. Unlike a forward it has **no fixed target** — each client supplies the
+destination per connection in the SOCKS5 request. The engine implements RFC 1928
+no‑auth with both **CONNECT** (TCP) and **UDP ASSOCIATE**.
+
+Crucially, the proxy's upstream sockets go through the **same per‑route egress**
+as a normal forward, so a SOCKS5 listener can be pinned to a specific network —
+including the no‑root `android_setsocknetwork()` pin — and every connection the
+proxy dials then egresses over that network. Point any SOCKS5‑aware client (a
+browser, `curl --socks5`, an app's proxy setting) at the listener and all of its
+traffic leaves over the chosen link.
+
+In the app, pick **SOCKS5 proxy** as the route type in the Add dialog. The
+target fields disappear (there is no fixed target) and only the listen
+address/port and the egress selector remain. A SOCKS route renders as, e.g.,
+`socks5  127.0.0.1:1080  via cellular`.
+
+> A SOCKS5 proxy dials **arbitrary** destinations by nature — anything the
+> client asks for. Switchboard is the human‑facing UI with no allow‑list gate,
+> so the egress selector is the control: choose which link the proxy's upstream
+> uses.
+
+**Example — SOCKS5 on `127.0.0.1:1080` pinned to cellular:**
+
+```
+Route type: SOCKS5 proxy
+Listen:     127.0.0.1 : 1080
+Egress:     Network → (pick the Cellular entry)
+```
+
+Then e.g. `curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me` from an
+on‑device shell egresses over cellular even while Wi‑Fi is the system default.
+
+> **Privileged‑port caveat:** like any listener, a SOCKS5 proxy cannot bind a
+> port `< 1024` from the sandboxed app (the OS gates it). Use `≥ 1024`; the
+> SOCKS default `1080` is fine.
 
 ---
 
