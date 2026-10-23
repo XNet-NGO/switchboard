@@ -63,8 +63,6 @@ class ForwarderService : Service() {
             handle = h
 
             routes.forEach { r ->
-                val proto = if (r.proto == Proto.TCP) SwitchboardNative.PROTO_TCP
-                else SwitchboardNative.PROTO_UDP
                 val kind = when (r.egress) {
                     EgressMode.NONE -> SwitchboardNative.EGRESS_NONE
                     EgressMode.SOURCE -> SwitchboardNative.EGRESS_SOURCE
@@ -78,10 +76,20 @@ class ForwarderService : Service() {
                 } else {
                     0L
                 }
-                val rc = SwitchboardNative.nativeAddRoute(
-                    h, proto, r.listenAddr, r.listenPort,
-                    r.targetAddr, r.targetPort, kind, r.egressArg, netHandle,
-                )
+                val rc = if (r.socks) {
+                    // SOCKS5 proxy: no fixed target; the same egress policy is
+                    // applied to every upstream the proxy opens.
+                    SwitchboardNative.nativeAddSocks(
+                        h, r.listenAddr, r.listenPort, kind, r.egressArg, netHandle,
+                    )
+                } else {
+                    val proto = if (r.proto == Proto.TCP) SwitchboardNative.PROTO_TCP
+                    else SwitchboardNative.PROTO_UDP
+                    SwitchboardNative.nativeAddRoute(
+                        h, proto, r.listenAddr, r.listenPort,
+                        r.targetAddr, r.targetPort, kind, r.egressArg, netHandle,
+                    )
+                }
                 if (rc != 0) Log.w(TAG, "add route failed: ${r.summary()}")
             }
 

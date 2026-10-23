@@ -40,6 +40,22 @@ object SwitchboardNative {
         networkHandle: Long,
     ): Int
 
+    /**
+     * Register a SOCKS5 proxy listener. No fixed target: each SOCKS client
+     * supplies the destination per connection. The same egress policy is
+     * applied to every upstream socket the proxy opens, so network pinning
+     * (CALLBACK egress) works exactly like a normal route — this is the
+     * no-root "SOCKS over cellular/wifi" path.
+     */
+    external fun nativeAddSocks(
+        handle: Long,
+        listenAddr: String,
+        listenPort: Int,
+        egressKind: Int,
+        egressArg: String,
+        networkHandle: Long,
+    ): Int
+
     external fun nativeRun(handle: Long)
     external fun nativeStop(handle: Long)
     external fun nativeDestroy(handle: Long)

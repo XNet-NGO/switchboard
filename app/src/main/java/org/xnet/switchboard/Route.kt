@@ -42,15 +42,22 @@ data class Route(
     val networkHandle: Long = 0L,
     /** For EgressMode.NETWORK: which transport to requestNetwork() for. */
     val transport: NetTransport = NetTransport.ANY,
+    /** True if this route is a SOCKS5 proxy listener (no fixed target; the
+     *  destination is supplied per-connection by the SOCKS client). The
+     *  [proto] and [targetAddr]/[targetPort] fields are ignored for SOCKS. */
+    val socks: Boolean = false,
 ) {
     fun summary(): String {
-        val p = if (proto == Proto.TCP) "tcp" else "udp"
         val eg = when (egress) {
             EgressMode.NONE -> ""
             EgressMode.SOURCE -> "  src=$egressArg"
             EgressMode.DEVICE -> "  dev=$egressArg"
             EgressMode.NETWORK -> "  via ${transport.name.lowercase()}"
         }
+        if (socks) {
+            return "socks5  $listenAddr:$listenPort$eg"
+        }
+        val p = if (proto == Proto.TCP) "tcp" else "udp"
         return "$p  $listenAddr:$listenPort → $targetAddr:$targetPort$eg"
     }
 }

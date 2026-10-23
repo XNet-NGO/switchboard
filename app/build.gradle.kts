@@ -7,7 +7,7 @@ plugins {
 // Switchboard consumes portmux as prebuilt static libraries (GitHub release),
 // not as source. Per-ABI tarballs are downloaded into app/.portmux/ and the
 // .a files extracted to app/.portmux/libs/<abi>/. CMake imports them.
-val portmuxVersion = (project.findProperty("portmuxVersion") as String?) ?: "v0.1.0"
+val portmuxVersion = (project.findProperty("portmuxVersion") as String?) ?: "v0.2.0"
 val portmuxRepo = "XNet-NGO/portmux"
 val portmuxAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 val portmuxDir = layout.projectDirectory.dir(".portmux")
@@ -64,8 +64,8 @@ android {
         applicationId = "org.xnet.switchboard"
         minSdk = 23
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         ndk {
             abiFilters += portmuxAbis

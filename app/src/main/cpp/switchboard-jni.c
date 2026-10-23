@@ -6,6 +6,7 @@
  * Exposes a small surface to Kotlin:
  *   nativeNew()                         -> long handle
  *   nativeAddRoute(h, proto, la, lp, ta, tp, egressKind, egressArg)
+ *   nativeAddSocks(h, la, lp, egressKind, egressArg, networkHandle)
  *   nativeRun(h)                        (BLOCKS - call on a worker thread)
  *   nativeStop(h)
  *   nativeDestroy(h)
@@ -102,6 +103,53 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeNew (JNIEnv *env, jclass c)
     return (jlong)(intptr_t)portmux_new ();
 }
 
+/* Build a PortmuxEgress from the egressKind/egressArg/networkHandle surface
+   shared by nativeAddRoute and nativeAddSocks. On return *egp either points at
+   @eg (and @eg is populated) or is NULL for PORTMUX_EGRESS_NONE.
+   egressKind: 0 NONE, 1 SOURCE (arg=ip), 2 DEVICE (arg=ifname),
+               3 CALLBACK (arg unused; networkHandle carries the Network).
+   portmux copies primitive fields but keeps our string/ctx pointers by
+   reference, so the small strdup/ctx allocations are intentionally leaked for
+   the life of the forwarder (freed implicitly at process exit). */
+static void
+build_egress (jint egressKind, const char *arg, jlong networkHandle,
+              PortmuxEgress *eg, PortmuxEgress **egp)
+{
+    memset (eg, 0, sizeof *eg);
+
+    switch (egressKind) {
+    case 1:
+        eg->kind = PORTMUX_EGRESS_SOURCE;
+        eg->source_ip = strdup (arg);
+        *egp = eg;
+        break;
+    case 2: {
+        /* Interface pinning: an app cannot hold CAP_NET_RAW (AOSP
+           app.te:600 neverallow), so delegate to xnix-netd via
+           PORTMUX_EGRESS_PROVIDED_FD — the daemon mints an
+           SO_BINDTODEVICE-pinned fd and portmux adopts it. */
+        ProvCtx *pc = calloc (1, sizeof (ProvCtx));
+        strncpy (pc->ifname, arg, sizeof (pc->ifname) - 1);
+        eg->kind = PORTMUX_EGRESS_PROVIDED_FD;
+        eg->provider = provide_pinned_fd;
+        eg->callback_data = pc;
+        *egp = eg;
+        break;
+    }
+    case 3: {
+        EgressCtx *ctx = calloc (1, sizeof (EgressCtx));
+        ctx->network_handle = (net_handle_t)networkHandle;
+        eg->kind = PORTMUX_EGRESS_CALLBACK;
+        eg->callback = bind_hook;
+        eg->callback_data = ctx;
+        *egp = eg;
+        break;
+    }
+    default:
+        *egp = NULL; /* NONE */
+    }
+}
+
 /* egressKind: 0 NONE, 1 SOURCE (egressArg=ip), 2 DEVICE (egressArg=ifname),
                3 CALLBACK (egressArg unused; networkHandle carries the Network) */
 JNIEXPORT jint JNICALL
@@ -122,46 +170,36 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddRoute (
 
     PortmuxEgress eg;
     PortmuxEgress *egp = NULL;
-    memset (&eg, 0, sizeof eg);
-
-    switch (egressKind) {
-    case 1:
-        eg.kind = PORTMUX_EGRESS_SOURCE;
-        eg.source_ip = strdup (arg);
-        egp = &eg;
-        break;
-    case 2: {
-        /* Interface pinning: an app cannot hold CAP_NET_RAW (AOSP
-           app.te:600 neverallow), so delegate to xnix-netd via
-           PORTMUX_EGRESS_PROVIDED_FD — the daemon mints an
-           SO_BINDTODEVICE-pinned fd and portmux adopts it. */
-        ProvCtx *pc = calloc (1, sizeof (ProvCtx));
-        strncpy (pc->ifname, arg, sizeof (pc->ifname) - 1);
-        eg.kind = PORTMUX_EGRESS_PROVIDED_FD;
-        eg.provider = provide_pinned_fd;
-        eg.callback_data = pc;
-        egp = &eg;
-        break;
-    }
-    case 3: {
-        EgressCtx *ctx = calloc (1, sizeof (EgressCtx));
-        ctx->network_handle = (net_handle_t)networkHandle;
-        eg.kind = PORTMUX_EGRESS_CALLBACK;
-        eg.callback = bind_hook;
-        eg.callback_data = ctx;
-        egp = &eg;
-        break;
-    }
-    default:
-        egp = NULL; /* NONE */
-    }
+    build_egress (egressKind, arg, networkHandle, &eg, &egp);
 
     PortmuxProto p = (proto == 1) ? PORTMUX_PROTO_UDP : PORTMUX_PROTO_TCP;
-    int rc = portmux_add_route (pm, p, la, listenPort, ta, targetPort, egp);
-    /* portmux copies primitive fields but keeps our string/ctx pointers by
-       reference, so we intentionally leak the small strdup/ctx for the life of
-       the forwarder (freed implicitly at process exit). Routes are few. */
-    return rc;
+    return portmux_add_route (pm, p, la, listenPort, ta, targetPort, egp);
+}
+
+/* Register a SOCKS5 proxy listener. Like nativeAddRoute there is no fixed
+   target — each SOCKS client supplies the destination per connection — but the
+   same egress policy is applied to every upstream socket the proxy opens, so
+   the no-root "SOCKS over cellular/wifi" pin works via CALLBACK egress exactly
+   like a normal route. egressKind/egressArg/networkHandle mirror nativeAddRoute. */
+JNIEXPORT jint JNICALL
+Java_org_xnet_switchboard_SwitchboardNative_nativeAddSocks (
+    JNIEnv *env, jclass c, jlong h,
+    jstring listenAddr, jint listenPort,
+    jint egressKind, jstring egressArg, jlong networkHandle)
+{
+    (void)c;
+    Portmux *pm = (Portmux *)(intptr_t)h;
+    if (!pm) return -1;
+
+    char la[128], arg[128];
+    jstr (env, listenAddr, la, sizeof la);
+    jstr (env, egressArg, arg, sizeof arg);
+
+    PortmuxEgress eg;
+    PortmuxEgress *egp = NULL;
+    build_egress (egressKind, arg, networkHandle, &eg, &egp);
+
+    return portmux_add_socks (pm, la, listenPort, egp);
 }
 
 JNIEXPORT void JNICALL
