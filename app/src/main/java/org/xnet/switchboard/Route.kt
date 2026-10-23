@@ -46,6 +46,17 @@ data class Route(
      *  destination is supplied per-connection by the SOCKS client). The
      *  [proto] and [targetAddr]/[targetPort] fields are ignored for SOCKS. */
     val socks: Boolean = false,
+    /** True if this route is an encrypted tunnel CLIENT (NoisePSK_NN): dials
+     *  [serverAddr]:[serverPort] and splices to [targetAddr]:[targetPort].
+     *  [psk] is 64 hex chars (stored in prefs — see note below); [cipher]
+     *  0=AES-256-GCM, 1=ChaCha20-Poly1305. NOTE: the PSK is persisted in
+     *  SharedPreferences in the clear, acceptable for this local human-UI app
+     *  but not a secret store. */
+    val tunnel: Boolean = false,
+    val serverAddr: String = "",
+    val serverPort: Int = 0,
+    val psk: String = "",
+    val cipher: Int = 0,
 ) {
     fun summary(): String {
         val eg = when (egress) {
@@ -53,6 +64,9 @@ data class Route(
             EgressMode.SOURCE -> "  src=$egressArg"
             EgressMode.DEVICE -> "  dev=$egressArg"
             EgressMode.NETWORK -> "  via ${transport.name.lowercase()}"
+        }
+        if (tunnel) {
+            return "tunnel  → $serverAddr:$serverPort ⇒ $targetAddr:$targetPort  (encrypted)$eg"
         }
         if (socks) {
             return "socks5  $listenAddr:$listenPort$eg"

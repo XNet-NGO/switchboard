@@ -74,6 +74,28 @@ object SwitchboardNative {
     ): Int
 
     /**
+     * Register an encrypted tunnel CLIENT (Noise NoisePSK_NN): dial
+     * [serverAddr]:[serverPort], authenticate with [pskHex] (64 hex chars /
+     * 32 bytes), and splice the decrypted stream to [targetAddr]:[targetPort]
+     * (e.g. 127.0.0.1:5555 = adbd). [cipher] 0=AES-256-GCM, 1=ChaCha20-Poly1305.
+     * The outbound leg honors the same egress surface (incl. the no-root
+     * NETWORK pin with live handle refresh).
+     */
+    external fun nativeAddTunnelClient(
+        handle: Long,
+        serverAddr: String,
+        serverPort: Int,
+        targetAddr: String,
+        targetPort: Int,
+        pskHex: String,
+        cipher: Int,
+        egressKind: Int,
+        egressArg: String,
+        networkHandle: Long,
+        token: Int,
+    ): Int
+
+    /**
      * Push a live network-handle update for every CALLBACK route sharing
      * [token]. Pass [netHandle] = 0 to mark the transport unavailable, which
      * makes new upstream connections for that token fail closed (no leak to the

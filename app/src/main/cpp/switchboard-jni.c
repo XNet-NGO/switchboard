@@ -30,6 +30,7 @@
 #include <android/multinetwork.h>
 
 #include "portmux.h"
+#include "portmux-tunnel.h"
 
 
 #define TAG "switchboard-jni"
@@ -320,4 +321,63 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeDestroy (JNIEnv *env,
     (void)env; (void)c;
     Portmux *pm = (Portmux *)(intptr_t)h;
     if (pm) portmux_destroy (pm);
+}
+
+/* Parse 64 hex chars -> 32 PSK bytes. Returns 0 on success. */
+static int
+parse_psk_hex (const char *hex, unsigned char out[PM_TUNNEL_PSK_LEN])
+{
+    if (!hex) return -1;
+    size_t n = strlen (hex);
+    if (n != PM_TUNNEL_PSK_LEN * 2) return -1;
+    for (int i = 0; i < PM_TUNNEL_PSK_LEN; i++) {
+        unsigned v;
+        if (sscanf (hex + i * 2, "%2x", &v) != 1) return -1;
+        out[i] = (unsigned char)v;
+    }
+    return 0;
+}
+
+/* Encrypted tunnel CLIENT (NoisePSK_NN): dial serverAddr:serverPort and splice
+   to targetAddr:targetPort. pskHex = 64 hex chars. cipher 0=AES-GCM, 1=ChaCha.
+   The outbound leg honors the egress (incl. the no-root NETWORK pin + live
+   handle), reusing build_egress exactly like a normal route. */
+JNIEXPORT jint JNICALL
+Java_org_xnet_switchboard_SwitchboardNative_nativeAddTunnelClient (
+    JNIEnv *env, jclass c, jlong h,
+    jstring serverAddr, jint serverPort,
+    jstring targetAddr, jint targetPort,
+    jstring pskHex, jint cipher,
+    jint egressKind, jstring egressArg, jlong networkHandle, jint token)
+{
+    (void)c;
+    Portmux *pm = (Portmux *)(intptr_t)h;
+    if (!pm) return -1;
+
+    char sa[128], ta[128], arg[128], pk[128];
+    jstr (env, serverAddr, sa, sizeof sa);
+    jstr (env, targetAddr, ta, sizeof ta);
+    jstr (env, egressArg, arg, sizeof arg);
+    jstr (env, pskHex, pk, sizeof pk);
+
+    unsigned char psk[PM_TUNNEL_PSK_LEN];
+    if (parse_psk_hex (pk, psk) < 0) {
+        LOGW ("add_tunnel: bad PSK (need 64 hex chars)");
+        return -1;
+    }
+
+    PortmuxEgress eg;
+    PortmuxEgress *egp = NULL;
+    build_egress (egressKind, arg, networkHandle, token, &eg, &egp);
+
+    PmTunnelCipher cph = (cipher == 1) ? PM_TUNNEL_CIPHER_CHACHAPOLY
+                                       : PM_TUNNEL_CIPHER_AESGCM;
+    int rc = portmux_add_tunnel_client (pm, NULL, 0,
+                                        sa, (int)serverPort,
+                                        ta[0] ? ta : "127.0.0.1", (int)targetPort,
+                                        psk, cph, egp);
+    memset (psk, 0, sizeof psk);
+    LOGI ("add_tunnel rc=%d server=%s:%d target=%s:%d cipher=%d token=%d",
+          rc, sa, (int)serverPort, ta, (int)targetPort, (int)cipher, (int)token);
+    return rc;
 }
