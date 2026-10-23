@@ -49,6 +49,16 @@ class ForwarderService : Service() {
         val req = NetworkRequester(this)
         requester = req
 
+        // Push live network-handle changes into the native CALLBACK egress so a
+        // long-lived route/SOCKS proxy survives a Wi-Fi<->cellular handoff or a
+        // revoked-then-regranted network: bind_hook reads the latest handle per
+        // connection instead of a frozen one. Fail-closed on loss (handle 0).
+        req.onHandleChanged = { transport, handle ->
+            SwitchboardNative.nativeUpdateNetworkHandle(
+                SwitchboardNative.tokenFor(transport), handle,
+            )
+        }
+
         // All portmux setup + run happens on the worker thread. resolveHandle()
         // may block (waiting for requestNetwork to resolve), so it must not run
         // on the main thread; and the hev-task system is thread-local, so
@@ -71,23 +81,28 @@ class ForwarderService : Service() {
                 }
                 // For NETWORK egress, request the chosen transport and use the
                 // resolved handle (falls back to the stored handle on timeout).
-                val netHandle = if (r.egress == EgressMode.NETWORK) {
-                    req.resolveHandle(r.transport, r.networkHandle)
+                // The token groups this route for live handle updates.
+                val netHandle: Long
+                val token: Int
+                if (r.egress == EgressMode.NETWORK) {
+                    netHandle = req.resolveHandle(r.transport, r.networkHandle)
+                    token = SwitchboardNative.tokenFor(r.transport)
                 } else {
-                    0L
+                    netHandle = 0L
+                    token = 0
                 }
                 val rc = if (r.socks) {
                     // SOCKS5 proxy: no fixed target; the same egress policy is
                     // applied to every upstream the proxy opens.
                     SwitchboardNative.nativeAddSocks(
-                        h, r.listenAddr, r.listenPort, kind, r.egressArg, netHandle,
+                        h, r.listenAddr, r.listenPort, kind, r.egressArg, netHandle, token,
                     )
                 } else {
                     val proto = if (r.proto == Proto.TCP) SwitchboardNative.PROTO_TCP
                     else SwitchboardNative.PROTO_UDP
                     SwitchboardNative.nativeAddRoute(
                         h, proto, r.listenAddr, r.listenPort,
-                        r.targetAddr, r.targetPort, kind, r.egressArg, netHandle,
+                        r.targetAddr, r.targetPort, kind, r.egressArg, netHandle, token,
                     )
                 }
                 if (rc != 0) Log.w(TAG, "add route failed: ${r.summary()}")

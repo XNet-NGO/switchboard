@@ -35,6 +35,17 @@ class NetworkRequester(context: Context) {
     private val holders = ConcurrentHashMap<NetTransport, Holder>()
 
     /**
+     * Notified whenever a requested transport's live [Network] changes: a
+     * non-zero handle on [ConnectivityManager.NetworkCallback.onAvailable], and
+     * 0 on [onLost] (meaning "currently unavailable"). Used to push a live
+     * handle into the native CALLBACK egress so a long-lived SOCKS proxy keeps
+     * working across a Wi-Fi<->cellular handoff instead of latching on a stale
+     * handle. Set before [resolveHandle] so the initial onAvailable is seen.
+     */
+    @Volatile
+    var onHandleChanged: ((transport: NetTransport, handle: Long) -> Unit)? = null
+
+    /**
      * Ensure a network of [transport] is requested and resolved; returns its
      * network handle, or 0 if it could not be obtained within [timeoutMs].
      * For [NetTransport.ANY], returns [fallbackHandle] unchanged (no request).
@@ -79,11 +90,16 @@ class NetworkRequester(context: Context) {
                 holder.network = network
                 holder.latch.countDown()
                 Log.i(TAG, "network available for $transport: ${network.networkHandle}")
+                onHandleChanged?.invoke(transport, network.networkHandle)
             }
 
             override fun onLost(network: Network) {
                 if (holder.network == network) holder.network = null
                 Log.i(TAG, "network lost for $transport")
+                // Only signal "gone" if no replacement network is present.
+                if (holder.network == null) {
+                    onHandleChanged?.invoke(transport, 0L)
+                }
             }
         }
         try {
