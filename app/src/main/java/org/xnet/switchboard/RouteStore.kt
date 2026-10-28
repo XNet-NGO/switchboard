@@ -33,6 +33,11 @@ object RouteStore {
                     serverPort = o.optInt("serverPort"),
                     psk = o.optString("psk", ""),
                     cipher = o.optInt("cipher"),
+                    revListenAddr = o.optString("revListenAddr", ""),
+                    revListenPort = o.optInt("revListenPort"),
+                    revTargetAddr = o.optString("revTargetAddr", ""),
+                    revTargetPort = o.optInt("revTargetPort"),
+                    revProto = o.optInt("revProto"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -59,7 +64,12 @@ object RouteStore {
                     .put("serverAddr", r.serverAddr)
                     .put("serverPort", r.serverPort)
                     .put("psk", r.psk)
-                    .put("cipher", r.cipher),
+                    .put("cipher", r.cipher)
+                    .put("revListenAddr", r.revListenAddr)
+                    .put("revListenPort", r.revListenPort)
+                    .put("revTargetAddr", r.revTargetAddr)
+                    .put("revTargetPort", r.revTargetPort)
+                    .put("revProto", r.revProto),
             )
         }
         prefs(ctx).edit().putString(KEY, arr.toString()).apply()

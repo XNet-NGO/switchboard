@@ -341,24 +341,33 @@ parse_psk_hex (const char *hex, unsigned char out[PM_TUNNEL_PSK_LEN])
 /* Encrypted tunnel CLIENT (NoisePSK_NN): dial serverAddr:serverPort and splice
    to targetAddr:targetPort. pskHex = 64 hex chars. cipher 0=AES-GCM, 1=ChaCha.
    The outbound leg honors the egress (incl. the no-root NETWORK pin + live
-   handle), reusing build_egress exactly like a normal route. */
+   handle), reusing build_egress exactly like a normal route.
+   REVERSE (v0.4.0): rlistenAddr/rlistenPort open a REVERSE LISTENER on the
+   client (connections there become client-originated reverse streams the server
+   splices to rtargetAddr:rtargetPort). rproto: 0=TCP, 1=UDP, 2=BOTH (dual-stack).
+   When rlistenPort=0, no reverse (backward compatible with v0.3.0). */
 JNIEXPORT jint JNICALL
 Java_org_xnet_switchboard_SwitchboardNative_nativeAddTunnelClient (
     JNIEnv *env, jclass c, jlong h,
     jstring serverAddr, jint serverPort,
     jstring targetAddr, jint targetPort,
     jstring pskHex, jint cipher,
-    jint egressKind, jstring egressArg, jlong networkHandle, jint token)
+    jint egressKind, jstring egressArg, jlong networkHandle, jint token,
+    jstring rlistenAddr, jint rlistenPort,
+    jstring rtargetAddr, jint rtargetPort, jint rproto)
 {
     (void)c;
     Portmux *pm = (Portmux *)(intptr_t)h;
     if (!pm) return -1;
 
     char sa[128], ta[128], arg[128], pk[128];
+    char rla[128], rta[128];
     jstr (env, serverAddr, sa, sizeof sa);
     jstr (env, targetAddr, ta, sizeof ta);
     jstr (env, egressArg, arg, sizeof arg);
     jstr (env, pskHex, pk, sizeof pk);
+    jstr (env, rlistenAddr, rla, sizeof rla);
+    jstr (env, rtargetAddr, rta, sizeof rta);
 
     unsigned char psk[PM_TUNNEL_PSK_LEN];
     if (parse_psk_hex (pk, psk) < 0) {
@@ -372,12 +381,33 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddTunnelClient (
 
     PmTunnelCipher cph = (cipher == 1) ? PM_TUNNEL_CIPHER_CHACHAPOLY
                                        : PM_TUNNEL_CIPHER_AESGCM;
-    int rc = portmux_add_tunnel_client (pm, NULL, 0,
+    /* v0.4.0: pass rlistenAddr/rlistenPort as listen_addr/listen_port when
+       reverse is requested (rlistenPort>0), else NULL,0 for forward-only. */
+    const char *la = (rlistenPort > 0) ? (rla[0] ? rla : NULL) : NULL;
+    int lp = (rlistenPort > 0) ? (int)rlistenPort : 0;
+    int rc = portmux_add_tunnel_client (pm, la, lp,
                                         sa, (int)serverPort,
                                         ta[0] ? ta : "127.0.0.1", (int)targetPort,
                                         psk, cph, egp);
+    if (rc == 0 && rtargetPort > 0) {
+        /* Set the SERVER-side reverse target (where the server connects on
+           a reverse OPEN initiated by the client). */
+        if (portmux_tunnel_set_reverse_target (pm, rta[0] ? rta : "127.0.0.1",
+                                               (int)rtargetPort) < 0) {
+            LOGW ("add_tunnel: set_reverse_target failed");
+        }
+    }
+    if (rc == 0 && rlistenPort > 0) {
+        /* Set the reverse listener protocol: 0=TCP, 1=UDP, 2=BOTH. */
+        if (portmux_tunnel_set_reverse_proto (pm, (int)rproto) < 0) {
+            LOGW ("add_tunnel: set_reverse_proto failed");
+        }
+    }
     memset (psk, 0, sizeof psk);
-    LOGI ("add_tunnel rc=%d server=%s:%d target=%s:%d cipher=%d token=%d",
-          rc, sa, (int)serverPort, ta, (int)targetPort, (int)cipher, (int)token);
+    LOGI ("add_tunnel rc=%d server=%s:%d target=%s:%d cipher=%d token=%d "
+          "rev=%s:%d->%s:%d proto=%d",
+          rc, sa, (int)serverPort, ta, (int)targetPort, (int)cipher, (int)token,
+          la ? la : "(none)", lp, rta[0] ? rta : "(none)", (int)rtargetPort,
+          (int)rproto);
     return rc;
 }
