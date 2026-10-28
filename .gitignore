@@ -16,3 +16,5 @@
 .DS_Store
 build.out
 *.pre-optA.bak
+*.apk
+*.apk.sha256
