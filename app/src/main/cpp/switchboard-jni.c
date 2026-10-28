@@ -411,3 +411,103 @@ Java_org_xnet_switchboard_SwitchboardNative_nativeAddTunnelClient (
           (int)rproto);
     return rc;
 }
+
+/* Encrypted tunnel PEER (v0.5.0, multi-hop jump routing): a single-port
+   peek-demux tunnel server that relays OPENJ to the next hop (dialed on
+   demand, honoring the egress) or connects the terminal target when the
+   jump-list is exhausted. listenAddr:listenPort is where encrypted carriers
+   connect; pskHex = 64 hex chars; cipher 0=AES-GCM, 1=ChaCha. The egress
+   surface mirrors nativeAddTunnelClient (incl. the no-root NETWORK pin). */
+JNIEXPORT jint JNICALL
+Java_org_xnet_switchboard_SwitchboardNative_nativeAddTunnelPeer (
+    JNIEnv *env, jclass c, jlong h,
+    jstring listenAddr, jint listenPort,
+    jstring pskHex, jint cipher,
+    jint egressKind, jstring egressArg, jlong networkHandle, jint token)
+{
+    (void)c;
+    Portmux *pm = (Portmux *)(intptr_t)h;
+    if (!pm) return -1;
+
+    char la[128], arg[128], pk[128];
+    jstr (env, listenAddr, la, sizeof la);
+    jstr (env, egressArg, arg, sizeof arg);
+    jstr (env, pskHex, pk, sizeof pk);
+
+    unsigned char psk[PM_TUNNEL_PSK_LEN];
+    if (parse_psk_hex (pk, psk) < 0) {
+        LOGW ("add_peer: bad PSK (need 64 hex chars)");
+        return -1;
+    }
+
+    PortmuxEgress eg;
+    PortmuxEgress *egp = NULL;
+    build_egress (egressKind, arg, networkHandle, token, &eg, &egp);
+
+    PmTunnelCipher cph = (cipher == 1) ? PM_TUNNEL_CIPHER_CHACHAPOLY
+                                       : PM_TUNNEL_CIPHER_AESGCM;
+    int rc = portmux_add_tunnel_peer (pm, la[0] ? la : "0.0.0.0",
+                                      (int)listenPort, psk, cph, egp);
+    memset (psk, 0, sizeof psk);
+    LOGI ("add_peer rc=%d listen=%s:%d cipher=%d token=%d",
+          rc, la[0] ? la : "0.0.0.0", (int)listenPort, (int)cipher, (int)token);
+    return rc;
+}
+
+/* Configure the EDGE originator's jump-list on the most-recently-added tunnel
+   route (call right after the edge nativeAddTunnelClient). hopsAddrCsv /
+   hopsPortCsv are parallel comma-separated lists of the ordered next-hops;
+   hops[0] MUST equal that client's carrier dest (its serverAddr:serverPort).
+   nhops in 1..PM_MUX_MAX_HOPS. targetAddr:targetPort is the final destination;
+   proto 0=TCP, 1=UDP (final leg). Returns 0 on success. */
+JNIEXPORT jint JNICALL
+Java_org_xnet_switchboard_SwitchboardNative_nativeSetJumps (
+    JNIEnv *env, jclass c, jlong h,
+    jstring hopsAddrCsv, jstring hopsPortCsv,
+    jstring targetAddr, jint targetPort, jint proto)
+{
+    (void)c;
+    Portmux *pm = (Portmux *)(intptr_t)h;
+    if (!pm) return -1;
+
+    char ac[1024], pc[256], ta[128];
+    jstr (env, hopsAddrCsv, ac, sizeof ac);
+    jstr (env, hopsPortCsv, pc, sizeof pc);
+    jstr (env, targetAddr, ta, sizeof ta);
+
+    PmJumpEndpoint hops[PM_MUX_MAX_HOPS];
+    memset (hops, 0, sizeof hops);
+    int nhops = 0;
+
+    /* Walk the two parallel CSV lists in lockstep. */
+    char *as = ac, *ps = pc;
+    char *asave = NULL, *psave = NULL;
+    for (;;) {
+        char *atok = strtok_r (as, ",", &asave);
+        char *ptok = strtok_r (ps, ",", &psave);
+        as = NULL; ps = NULL;
+        if (!atok || !ptok) break;
+        if (nhops >= PM_MUX_MAX_HOPS) {
+            LOGW ("set_jumps: too many hops (>%d); truncating", PM_MUX_MAX_HOPS);
+            break;
+        }
+        strncpy (hops[nhops].addr, atok, sizeof hops[nhops].addr - 1);
+        hops[nhops].addr[sizeof hops[nhops].addr - 1] = '\0';
+        hops[nhops].port = (int)strtol (ptok, NULL, 10);
+        nhops++;
+    }
+
+    if (nhops < 1) {
+        LOGW ("set_jumps: need at least 1 hop");
+        return -1;
+    }
+
+    int pr = (proto == 1) ? PM_MUX_PROTO_UDP : PM_MUX_PROTO_TCP;
+    int rc = portmux_tunnel_set_jumps (pm, hops, nhops,
+                                       ta[0] ? ta : "127.0.0.1",
+                                       (int)targetPort, pr);
+    LOGI ("set_jumps rc=%d nhops=%d hop0=%s:%d target=%s:%d proto=%d",
+          rc, nhops, hops[0].addr, hops[0].port,
+          ta[0] ? ta : "127.0.0.1", (int)targetPort, pr);
+    return rc;
+}

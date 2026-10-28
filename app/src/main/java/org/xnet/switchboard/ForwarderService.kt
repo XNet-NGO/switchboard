@@ -91,14 +91,38 @@ class ForwarderService : Service() {
                     netHandle = 0L
                     token = 0
                 }
-                val rc = if (r.tunnel) {
+                val rc = if (r.peer) {
+                    // Relay PEER (v0.5.0): single-port peek-demux tunnel server
+                    // that relays OPENJ onward or connects the terminal target.
+                    SwitchboardNative.nativeAddTunnelPeer(
+                        h, r.listenAddr, r.listenPort, r.psk, r.cipher,
+                        kind, r.egressArg, netHandle, token,
+                    )
+                } else if (r.tunnel) {
                     // Encrypted tunnel client: dial server, splice to target.
-                    SwitchboardNative.nativeAddTunnelClient(
+                    val trc = SwitchboardNative.nativeAddTunnelClient(
                         h, r.serverAddr, r.serverPort, r.targetAddr, r.targetPort,
                         r.psk, r.cipher, kind, r.egressArg, netHandle, token,
                         r.revListenAddr, r.revListenPort, r.revTargetAddr,
                         r.revTargetPort, r.revProto,
                     )
+                    // Multi-hop jumps (v0.5.0): configure the edge jump-list on
+                    // this most-recently-added route. hops[0] must equal the
+                    // carrier dest (serverAddr:serverPort).
+                    if (trc == 0 && r.jumpHops.isNotEmpty()) {
+                        val addrCsv = r.jumpHops.joinToString(",") {
+                            it.substringBeforeLast(':')
+                        }
+                        val portCsv = r.jumpHops.joinToString(",") {
+                            it.substringAfterLast(':')
+                        }
+                        val jrc = SwitchboardNative.nativeSetJumps(
+                            h, addrCsv, portCsv,
+                            r.jumpTargetAddr, r.jumpTargetPort, r.jumpProto,
+                        )
+                        if (jrc != 0) Log.w(TAG, "set jumps failed: ${r.summary()}")
+                    }
+                    trc
                 } else if (r.socks) {
                     // SOCKS5 proxy: no fixed target; the same egress policy is
                     // applied to every upstream the proxy opens.

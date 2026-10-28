@@ -33,10 +33,11 @@ fun AddRouteDialog(
     onAdd: (Route) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
-    // Route type: 0=Forward, 1=SOCKS5 proxy, 2=Encrypted tunnel.
+    // Route type: 0=Forward, 1=SOCKS5 proxy, 2=Encrypted tunnel, 3=Peer (relay).
     var routeType by remember { mutableStateOf(0) }
     val socks = routeType == 1
     val tunnel = routeType == 2
+    val peer = routeType == 3
     var proto by remember { mutableStateOf(Proto.TCP) }
     var listenAddr by remember { mutableStateOf("127.0.0.1") }
     var listenPort by remember { mutableStateOf("") }
@@ -52,12 +53,23 @@ fun AddRouteDialog(
     var revTargetAddr by remember { mutableStateOf("") }
     var revTargetPort by remember { mutableStateOf("") }
     var revProto by remember { mutableStateOf(0) } // 0=TCP, 1=UDP, 2=BOTH
+    // Jumps (v0.5.0, tunnel-only): comma-separated hops "addr:port" + target.
+    var jumpHops by remember { mutableStateOf("") }
+    var jumpTargetAddr by remember { mutableStateOf("") }
+    var jumpTargetPort by remember { mutableStateOf("") }
+    var jumpProto by remember { mutableStateOf(0) } // 0=TCP, 1=UDP
+    // Peer (v0.5.0): relay listen port.
+    var peerListenPort by remember { mutableStateOf("") }
     var egress by remember { mutableStateOf(EgressMode.NONE) }
     var egressArg by remember { mutableStateOf("") }
     var selectedNetwork by remember { mutableStateOf<EgressNetwork?>(null) }
 
     // Validity by type.
     val portsValid = when {
+        peer -> {
+            peerListenPort.toIntOrNull() != null &&
+                psk.length == 64 && psk.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        }
         tunnel -> {
             val basicValid = serverPort.toIntOrNull() != null &&
                 (targetPort.toIntOrNull() != null) &&
@@ -67,7 +79,19 @@ fun AddRouteDialog(
             val revUsed = revListenPort.isNotBlank() || revTargetAddr.isNotBlank() || revTargetPort.isNotBlank()
             val revValid = !revUsed || (revListenPort.toIntOrNull() != null &&
                 revTargetPort.toIntOrNull() != null && revTargetAddr.isNotBlank())
-            basicValid && revValid
+            // Jumps optional; if used, each hop must be addr:port, target set,
+            // and a reverse listener is required (the OPENJ plaintext entry).
+            val hops = jumpHops.split(',').map { it.trim() }.filter { it.isNotBlank() }
+            val jumpUsed = hops.isNotEmpty() || jumpTargetAddr.isNotBlank() || jumpTargetPort.isNotBlank()
+            val hopsValid = hops.isNotEmpty() && hops.size <= 8 && hops.all {
+                val host = it.substringBeforeLast(':', "")
+                val port = it.substringAfterLast(':', "")
+                host.isNotBlank() && port.toIntOrNull() != null
+            }
+            val jumpValid = !jumpUsed || (hopsValid &&
+                jumpTargetAddr.isNotBlank() && jumpTargetPort.toIntOrNull() != null &&
+                revListenPort.toIntOrNull() != null)
+            basicValid && revValid && jumpValid
         }
         socks -> listenPort.toIntOrNull() != null
         else -> listenPort.toIntOrNull() != null && targetPort.toIntOrNull() != null
@@ -115,6 +139,11 @@ fun AddRouteDialog(
                         },
                         label = { Text("Tunnel") },
                     )
+                    FilterChip(
+                        selected = routeType == 3,
+                        onClick = { routeType = 3 },
+                        label = { Text("Peer") },
+                    )
                 }
                 if (routeType == 0) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -131,7 +160,32 @@ fun AddRouteDialog(
                     }
                 }
 
-                if (tunnel) {
+                if (peer) {
+                    // Relay PEER: listen port + PSK + cipher (single-port
+                    // peek-demux server that relays OPENJ or connects target).
+                    OutlinedTextField(
+                        value = peerListenPort, onValueChange = { peerListenPort = it.filter(Char::isDigit) },
+                        label = { Text("Peer listen port (encrypted carriers)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = psk, onValueChange = { psk = it.trim() },
+                        label = { Text("Pre-shared key (64 hex chars)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !cipherChacha,
+                            onClick = { cipherChacha = false },
+                            label = { Text("AES-GCM") },
+                        )
+                        FilterChip(
+                            selected = cipherChacha,
+                            onClick = { cipherChacha = true },
+                            label = { Text("ChaCha20") },
+                        )
+                    }
+                } else if (tunnel) {
                     // Encrypted tunnel client: server + PSK + cipher + target.
                     OutlinedTextField(
                         value = serverAddr, onValueChange = { serverAddr = it },
@@ -203,6 +257,38 @@ fun AddRouteDialog(
                                 selected = revProto == 2,
                                 onClick = { revProto = 2 },
                                 label = { Text("BOTH") },
+                            )
+                        }
+                    }
+                    // Jumps (v0.5.0): optional multi-hop source route. Requires
+                    // a reverse listener above (the local plaintext OPENJ entry).
+                    Text("Multi-hop jumps (optional)", style = MaterialTheme.typography.labelLarge)
+                    OutlinedTextField(
+                        value = jumpHops, onValueChange = { jumpHops = it },
+                        label = { Text("Hops, comma-separated addr:port (hop0 = server)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (jumpHops.isNotBlank()) {
+                        OutlinedTextField(
+                            value = jumpTargetAddr, onValueChange = { jumpTargetAddr = it },
+                            label = { Text("Final target address") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = jumpTargetPort, onValueChange = { jumpTargetPort = it.filter(Char::isDigit) },
+                            label = { Text("Final target port") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = jumpProto == 0,
+                                onClick = { jumpProto = 0 },
+                                label = { Text("TCP") },
+                            )
+                            FilterChip(
+                                selected = jumpProto == 1,
+                                onClick = { jumpProto = 1 },
+                                label = { Text("UDP") },
                             )
                         }
                     }
@@ -286,16 +372,23 @@ fun AddRouteDialog(
                         Route(
                             name = name,
                             proto = proto,
-                            listenAddr = if (tunnel) "" else listenAddr.ifBlank { "127.0.0.1" },
-                            listenPort = if (tunnel || socks) {
-                                if (socks) listenPort.toInt() else 0
-                            } else listenPort.toInt(),
+                            listenAddr = when {
+                                tunnel -> ""
+                                peer -> "0.0.0.0"
+                                else -> listenAddr.ifBlank { "127.0.0.1" }
+                            },
+                            listenPort = when {
+                                peer -> peerListenPort.toInt()
+                                socks -> listenPort.toInt()
+                                tunnel -> 0
+                                else -> listenPort.toInt()
+                            },
                             targetAddr = when {
-                                socks -> ""
+                                socks || peer -> ""
                                 else -> targetAddr.ifBlank { "127.0.0.1" }
                             },
                             targetPort = when {
-                                socks -> 0
+                                socks || peer -> 0
                                 else -> targetPort.toInt()
                             },
                             egress = egress,
@@ -309,14 +402,22 @@ fun AddRouteDialog(
                             tunnel = tunnel,
                             serverAddr = if (tunnel) serverAddr else "",
                             serverPort = if (tunnel) serverPort.toInt() else 0,
-                            psk = if (tunnel) psk else "",
-                            cipher = if (tunnel && cipherChacha) 1 else 0,
+                            psk = if (tunnel || peer) psk else "",
+                            cipher = if ((tunnel || peer) && cipherChacha) 1 else 0,
                             revListenAddr = if (tunnel && revListenPort.isNotBlank()) "" else "",
                             revListenPort = if (tunnel) revListenPort.toIntOrNull() ?: 0 else 0,
                             revTargetAddr = if (tunnel && revListenPort.isNotBlank())
                                 revTargetAddr.ifBlank { "127.0.0.1" } else "",
                             revTargetPort = if (tunnel) revTargetPort.toIntOrNull() ?: 0 else 0,
                             revProto = if (tunnel && revListenPort.isNotBlank()) revProto else 0,
+                            peer = peer,
+                            jumpHops = if (tunnel && jumpHops.isNotBlank())
+                                jumpHops.split(',').map { it.trim() }.filter { it.isNotBlank() }
+                            else emptyList(),
+                            jumpTargetAddr = if (tunnel && jumpHops.isNotBlank()) jumpTargetAddr else "",
+                            jumpTargetPort = if (tunnel && jumpHops.isNotBlank())
+                                jumpTargetPort.toIntOrNull() ?: 0 else 0,
+                            jumpProto = if (tunnel && jumpHops.isNotBlank()) jumpProto else 0,
                         ),
                     )
                 },

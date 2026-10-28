@@ -67,6 +67,22 @@ data class Route(
     val revTargetAddr: String = "",
     val revTargetPort: Int = 0,
     val revProto: Int = 0, // 0=TCP, 1=UDP, 2=BOTH
+    /** PEER (v0.5.0, multi-hop): true if this route is a relay PEER — a
+     *  single-port peek-demux tunnel server on [listenAddr]:[listenPort] that
+     *  relays OPENJ to the next hop or connects the terminal target. Uses
+     *  [psk]/[cipher] like a tunnel. */
+    val peer: Boolean = false,
+    /** JUMPS (v0.5.0, tunnel-only): ordered next-hops as "addr:port" strings
+     *  configured on this EDGE tunnel route (emitted as OPENJ). hops[0] MUST
+     *  equal this route's [serverAddr]:[serverPort]. 1..8 hops. The final
+     *  destination is [jumpTargetAddr]:[jumpTargetPort]; [jumpProto] 0=TCP,
+     *  1=UDP (final leg). Empty = no jumps (ordinary single-hop tunnel). A
+     *  jump route requires a reverse listener ([revListenPort]>0) as the local
+     *  plaintext entry that emits OPENJ. */
+    val jumpHops: List<String> = emptyList(),
+    val jumpTargetAddr: String = "",
+    val jumpTargetPort: Int = 0,
+    val jumpProto: Int = 0, // 0=TCP, 1=UDP
 ) {
     fun summary(): String {
         val eg = when (egress) {
@@ -75,9 +91,12 @@ data class Route(
             EgressMode.DEVICE -> "  dev=$egressArg"
             EgressMode.NETWORK -> "  via ${transport.name.lowercase()}"
         }
+        if (peer) {
+            return "peer  :$listenPort  (relay)$eg"
+        }
         if (tunnel) {
             val base = "tunnel  → $serverAddr:$serverPort ⇒ $targetAddr:$targetPort  (encrypted)$eg"
-            return if (revListenPort > 0) {
+            val withRev = if (revListenPort > 0) {
                 val proto = when (revProto) {
                     1 -> "udp"
                     2 -> "both"
@@ -85,6 +104,11 @@ data class Route(
                 }
                 "$base\n  +rev :$revListenPort → $revTargetAddr:$revTargetPort ($proto)"
             } else base
+            return if (jumpHops.isNotEmpty()) {
+                val jp = if (jumpProto == 1) "udp" else "tcp"
+                "$withRev\n  +jumps ${jumpHops.joinToString(" → ")} → " +
+                    "$jumpTargetAddr:$jumpTargetPort ($jp)"
+            } else withRev
         }
         if (socks) {
             return "socks5  $listenAddr:$listenPort$eg"

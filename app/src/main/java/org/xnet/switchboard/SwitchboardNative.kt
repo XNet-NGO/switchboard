@@ -107,6 +107,44 @@ object SwitchboardNative {
     ): Int
 
     /**
+     * Register an encrypted tunnel PEER (v0.5.0, multi-hop jump routing): a
+     * single-port peek-demux tunnel server on [listenAddr]:[listenPort] that
+     * relays OPENJ to the next hop (dialed on demand, honoring the egress) or
+     * connects the terminal target when the jump-list is exhausted. [pskHex]
+     * = 64 hex chars / 32 bytes; [cipher] 0=AES-256-GCM, 1=ChaCha20-Poly1305.
+     * The egress surface mirrors [nativeAddTunnelClient].
+     */
+    external fun nativeAddTunnelPeer(
+        handle: Long,
+        listenAddr: String,
+        listenPort: Int,
+        pskHex: String,
+        cipher: Int,
+        egressKind: Int,
+        egressArg: String,
+        networkHandle: Long,
+        token: Int,
+    ): Int
+
+    /**
+     * Configure the EDGE originator's jump-list on the most-recently-added
+     * tunnel route. Call right after the edge [nativeAddTunnelClient].
+     * [hopsAddrCsv]/[hopsPortCsv] are parallel comma-separated lists of the
+     * ordered next-hops; hops[0] MUST equal that client's carrier dest (its
+     * serverAddr:serverPort). 1..8 hops (PM_MUX_MAX_HOPS).
+     * [targetAddr]:[targetPort] is the final destination; [proto] 0=TCP, 1=UDP
+     * (final leg). Returns 0 on success.
+     */
+    external fun nativeSetJumps(
+        handle: Long,
+        hopsAddrCsv: String,
+        hopsPortCsv: String,
+        targetAddr: String,
+        targetPort: Int,
+        proto: Int,
+    ): Int
+
+    /**
      * Push a live network-handle update for every CALLBACK route sharing
      * [token]. Pass [netHandle] = 0 to mark the transport unavailable, which
      * makes new upstream connections for that token fail closed (no leak to the
