@@ -38,6 +38,13 @@ object RouteStore {
                     revTargetAddr = o.optString("revTargetAddr", ""),
                     revTargetPort = o.optInt("revTargetPort"),
                     revProto = o.optInt("revProto"),
+                    peer = o.optBoolean("peer", false),
+                    jumpHops = o.optJSONArray("jumpHops")?.let { ja ->
+                        (0 until ja.length()).map { ja.getString(it) }
+                    } ?: emptyList(),
+                    jumpTargetAddr = o.optString("jumpTargetAddr", ""),
+                    jumpTargetPort = o.optInt("jumpTargetPort"),
+                    jumpProto = o.optInt("jumpProto"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -69,7 +76,12 @@ object RouteStore {
                     .put("revListenPort", r.revListenPort)
                     .put("revTargetAddr", r.revTargetAddr)
                     .put("revTargetPort", r.revTargetPort)
-                    .put("revProto", r.revProto),
+                    .put("revProto", r.revProto)
+                    .put("peer", r.peer)
+                    .put("jumpHops", JSONArray(r.jumpHops))
+                    .put("jumpTargetAddr", r.jumpTargetAddr)
+                    .put("jumpTargetPort", r.jumpTargetPort)
+                    .put("jumpProto", r.jumpProto),
             )
         }
         prefs(ctx).edit().putString(KEY, arr.toString()).apply()
