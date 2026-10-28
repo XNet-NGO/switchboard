@@ -96,6 +96,8 @@ class ForwarderService : Service() {
                     SwitchboardNative.nativeAddTunnelClient(
                         h, r.serverAddr, r.serverPort, r.targetAddr, r.targetPort,
                         r.psk, r.cipher, kind, r.egressArg, netHandle, token,
+                        r.revListenAddr, r.revListenPort, r.revTargetAddr,
+                        r.revTargetPort, r.revProto,
                     )
                 } else if (r.socks) {
                     // SOCKS5 proxy: no fixed target; the same egress policy is

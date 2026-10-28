@@ -80,6 +80,12 @@ object SwitchboardNative {
      * (e.g. 127.0.0.1:5555 = adbd). [cipher] 0=AES-256-GCM, 1=ChaCha20-Poly1305.
      * The outbound leg honors the same egress surface (incl. the no-root
      * NETWORK pin with live handle refresh).
+     *
+     * REVERSE (v0.4.0): [revListenAddr]:[revListenPort] open a REVERSE LISTENER
+     * on the client (connections there become client-originated reverse streams
+     * the server splices to [revTargetAddr]:[revTargetPort]). [revProto]:
+     * 0=TCP, 1=UDP, 2=BOTH (dual-stack TCP+UDP on one port). When
+     * [revListenPort]=0, no reverse (backward compatible with v0.3.0).
      */
     external fun nativeAddTunnelClient(
         handle: Long,
@@ -93,6 +99,11 @@ object SwitchboardNative {
         egressArg: String,
         networkHandle: Long,
         token: Int,
+        revListenAddr: String,
+        revListenPort: Int,
+        revTargetAddr: String,
+        revTargetPort: Int,
+        revProto: Int,
     ): Int
 
     /**

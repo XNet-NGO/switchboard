@@ -57,6 +57,16 @@ data class Route(
     val serverPort: Int = 0,
     val psk: String = "",
     val cipher: Int = 0,
+    /** REVERSE (v0.4.0, tunnel-only): [revListenAddr]:[revListenPort] open a
+     *  REVERSE LISTENER on the client (connections there become client-originated
+     *  reverse streams the server splices to [revTargetAddr]:[revTargetPort]).
+     *  [revProto]: 0=TCP, 1=UDP, 2=BOTH (dual-stack TCP+UDP on one port).
+     *  When [revListenPort]=0, no reverse (backward compatible with v0.3.0). */
+    val revListenAddr: String = "",
+    val revListenPort: Int = 0,
+    val revTargetAddr: String = "",
+    val revTargetPort: Int = 0,
+    val revProto: Int = 0, // 0=TCP, 1=UDP, 2=BOTH
 ) {
     fun summary(): String {
         val eg = when (egress) {
@@ -66,7 +76,15 @@ data class Route(
             EgressMode.NETWORK -> "  via ${transport.name.lowercase()}"
         }
         if (tunnel) {
-            return "tunnel  → $serverAddr:$serverPort ⇒ $targetAddr:$targetPort  (encrypted)$eg"
+            val base = "tunnel  → $serverAddr:$serverPort ⇒ $targetAddr:$targetPort  (encrypted)$eg"
+            return if (revListenPort > 0) {
+                val proto = when (revProto) {
+                    1 -> "udp"
+                    2 -> "both"
+                    else -> "tcp"
+                }
+                "$base\n  +rev :$revListenPort → $revTargetAddr:$revTargetPort ($proto)"
+            } else base
         }
         if (socks) {
             return "socks5  $listenAddr:$listenPort$eg"

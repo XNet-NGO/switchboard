@@ -47,16 +47,28 @@ fun AddRouteDialog(
     var serverPort by remember { mutableStateOf("") }
     var psk by remember { mutableStateOf("") }
     var cipherChacha by remember { mutableStateOf(false) }
+    // Reverse (v0.4.0, tunnel-only)
+    var revListenPort by remember { mutableStateOf("") }
+    var revTargetAddr by remember { mutableStateOf("") }
+    var revTargetPort by remember { mutableStateOf("") }
+    var revProto by remember { mutableStateOf(0) } // 0=TCP, 1=UDP, 2=BOTH
     var egress by remember { mutableStateOf(EgressMode.NONE) }
     var egressArg by remember { mutableStateOf("") }
     var selectedNetwork by remember { mutableStateOf<EgressNetwork?>(null) }
 
     // Validity by type.
     val portsValid = when {
-        tunnel -> serverPort.toIntOrNull() != null &&
-            (targetPort.toIntOrNull() != null) &&
-            serverAddr.isNotBlank() &&
-            psk.length == 64 && psk.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        tunnel -> {
+            val basicValid = serverPort.toIntOrNull() != null &&
+                (targetPort.toIntOrNull() != null) &&
+                serverAddr.isNotBlank() &&
+                psk.length == 64 && psk.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+            // Reverse is optional; if any reverse field is set, validate them all.
+            val revUsed = revListenPort.isNotBlank() || revTargetAddr.isNotBlank() || revTargetPort.isNotBlank()
+            val revValid = !revUsed || (revListenPort.toIntOrNull() != null &&
+                revTargetPort.toIntOrNull() != null && revTargetAddr.isNotBlank())
+            basicValid && revValid
+        }
         socks -> listenPort.toIntOrNull() != null
         else -> listenPort.toIntOrNull() != null && targetPort.toIntOrNull() != null
     }
@@ -158,6 +170,42 @@ fun AddRouteDialog(
                         label = { Text("Local target port (e.g. 5555 = adbd)") },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    // Reverse (v0.4.0): optional reverse listener on client
+                    Text("Reverse listener (optional)", style = MaterialTheme.typography.labelLarge)
+                    OutlinedTextField(
+                        value = revListenPort, onValueChange = { revListenPort = it.filter(Char::isDigit) },
+                        label = { Text("Reverse listen port (empty = no reverse)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (revListenPort.isNotBlank()) {
+                        OutlinedTextField(
+                            value = revTargetAddr, onValueChange = { revTargetAddr = it },
+                            label = { Text("Reverse target address (on server)") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = revTargetPort, onValueChange = { revTargetPort = it.filter(Char::isDigit) },
+                            label = { Text("Reverse target port") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = revProto == 0,
+                                onClick = { revProto = 0 },
+                                label = { Text("TCP") },
+                            )
+                            FilterChip(
+                                selected = revProto == 1,
+                                onClick = { revProto = 1 },
+                                label = { Text("UDP") },
+                            )
+                            FilterChip(
+                                selected = revProto == 2,
+                                onClick = { revProto = 2 },
+                                label = { Text("BOTH") },
+                            )
+                        }
+                    }
                 } else {
                     OutlinedTextField(
                         value = listenAddr, onValueChange = { listenAddr = it },
@@ -263,6 +311,12 @@ fun AddRouteDialog(
                             serverPort = if (tunnel) serverPort.toInt() else 0,
                             psk = if (tunnel) psk else "",
                             cipher = if (tunnel && cipherChacha) 1 else 0,
+                            revListenAddr = if (tunnel && revListenPort.isNotBlank()) "" else "",
+                            revListenPort = if (tunnel) revListenPort.toIntOrNull() ?: 0 else 0,
+                            revTargetAddr = if (tunnel && revListenPort.isNotBlank())
+                                revTargetAddr.ifBlank { "127.0.0.1" } else "",
+                            revTargetPort = if (tunnel) revTargetPort.toIntOrNull() ?: 0 else 0,
+                            revProto = if (tunnel && revListenPort.isNotBlank()) revProto else 0,
                         ),
                     )
                 },
